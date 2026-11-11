@@ -14,6 +14,11 @@ import {
   Layers,
   CheckCircle2,
   Send,
+  Camera,
+  ChevronDown,
+  ChevronUp,
+  Smartphone,
+  Monitor,
 } from 'lucide-react';
 import {
   formatBytes,
@@ -22,6 +27,7 @@ import {
   type MmoPlayer,
   type MmoWorldZone,
   type FactionId,
+  type ElementType,
 } from './types.ts';
 import { CombatCardView, ElementIcon } from './components/CombatCardView.tsx';
 import { AutoBattleArenaModal } from './components/AutoBattleArenaModal.tsx';
@@ -39,9 +45,23 @@ export function App() {
     'feed' | 'forge' | 'sanctum' | 'world' | 'leaderboard'
   >('feed');
 
+  // Mobile-first shell mode (true = 480px native mobile shell on desktop; false = expanded wide grid)
+  const [mobileShellMode, setMobileShellMode] = useState(true);
+
   const [mmoState, setMmoState] = useState<MmoState | null>(null);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
+
+  // Mobile Squad Drawer expanded state at top of Feed
+  const [squadDrawerOpen, setSquadDrawerOpen] = useState(false);
+
+  // Expanded comments per post on mobile feed
+  const [expandedCommentPostIds, setExpandedCommentPostIds] = useState<
+    Record<string, boolean>
+  >({});
+
+  // Sanctum element filter
+  const [vaultFilter, setVaultFilter] = useState<'ALL' | 'EQUIPPED' | ElementType>('ALL');
 
   // Active Auto-Battle simulation modal state
   const [activeSimulation, setActiveSimulation] = useState<AutoBattleSimulation | null>(
@@ -63,6 +83,7 @@ export function App() {
   const [forgeStatusText, setForgeStatusText] = useState('');
   const [lastForgedCard, setLastForgedCard] = useState<MmoCard | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
 
   // Sanctum Soul-Fusion selection state
   const [fuseTargetCardId, setFuseTargetCardId] = useState<string | null>(null);
@@ -72,7 +93,7 @@ export function App() {
     setToast(msg);
     setTimeout(() => {
       setToast((prev) => (prev === msg ? null : prev));
-    }, 4200);
+    }, 3800);
   };
 
   const syncState = (nextState: MmoState) => {
@@ -89,7 +110,6 @@ export function App() {
       const res = await fetch('/api/mmo/state');
       if (res.ok) {
         const serverState = (await res.json()) as MmoState;
-        // Merge any locally forged cards if serverless container cold-started
         try {
           const cachedRaw = localStorage.getItem(LOCAL_CACHE_KEY);
           if (cachedRaw) {
@@ -146,6 +166,15 @@ export function App() {
     [playerSquad]
   );
 
+  const filteredVaultCards = useMemo(() => {
+    if (!player) return playerCards;
+    if (vaultFilter === 'ALL') return playerCards;
+    if (vaultFilter === 'EQUIPPED') {
+      return playerCards.filter((c) => player.squadCardIds.includes(c.id));
+    }
+    return playerCards.filter((c) => c.element === vaultFilter);
+  }, [playerCards, player, vaultFilter]);
+
   // Trigger an Auto-Battle against another Player/Rival Squad
   const handleChallengePlayer = async (
     rival: MmoPlayer,
@@ -172,10 +201,10 @@ export function App() {
     setActiveSimulation(sim);
     setBattleRewardSummary(
       sim.won
-        ? `Victory! +${mode === 'territory' ? 180 : 140} Lumen Dust · +${
+        ? `Victory! +${mode === 'territory' ? 180 : 140} Lumen · +${
             mode === 'territory' ? 5 : 3
-          } Chromatic Shards · +24 Arena Elo`
-        : `Defeat · +45 Lumen Dust · Recalibrate your squad order or upgrade cards in the Sanctum.`
+          } Shards · +24 ELO`
+        : `Defeat · +45 Lumen · Upgrade or reorder your squad in the Sanctum.`
     );
 
     const res = await fetch('/api/mmo/battle/record', {
@@ -256,9 +285,9 @@ export function App() {
 
     setActiveSimulation(sim);
     setBattleRewardSummary(
-      `Raid Strike Inflicted ${sim.totalDamageDealt.toLocaleString()} Damage to ${
+      `Raid Strike dealt ${sim.totalDamageDealt.toLocaleString()} DMG to ${
         boss.name
-      }! Earned +${boss.rewardLumen} Lumen Dust & +${boss.rewardShards} Chromatic Shards.`
+      }! +${boss.rewardLumen} Lumen & +${boss.rewardShards} Shards.`
     );
 
     const res = await fetch('/api/mmo/battle/record', {
@@ -283,7 +312,7 @@ export function App() {
     if (res.ok) {
       const data = await res.json();
       if (data.state) syncState(data.state);
-      showToast('⚡ Hype Resonance surging! Card HP & ATK permanently buffed (+15 Lumen Dust).');
+      showToast('⚡ Hype Resonance! Card HP & ATK permanently buffed (+15 Lumen).');
     }
   };
 
@@ -317,7 +346,7 @@ export function App() {
     setForgeTitle(cleanTitle || 'Riftbound Sovereign');
   };
 
-  // Synthesize a high-res procedural anomaly photo in-browser for 1-click forging test
+  // Synthesize a high-res procedural anomaly photo in-browser for 1-tap mobile forging
   const handleSynthesizeAnomaly = (
     preset: 'solar' | 'abyssal' | 'crimson' | 'verdant'
   ) => {
@@ -342,7 +371,6 @@ export function App() {
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Radiant focal core
     const rad = ctx.createRadialGradient(900, 540, 30, 900, 540, 520);
     rad.addColorStop(0, c2);
     rad.addColorStop(0.45, c1);
@@ -350,7 +378,6 @@ export function App() {
     ctx.fillStyle = rad;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Geometric monolith silhouette
     ctx.fillStyle = '#07080c';
     ctx.beginPath();
     ctx.moveTo(760, 1350);
@@ -385,17 +412,13 @@ export function App() {
 
     setForging(true);
     setLastForgedCard(null);
-    setForgeStatusText(
-      'Extracting optical EXIF & pre-optimizing master frame (< 2.8 MB Vercel-safe)...'
-    );
+    setForgeStatusText('Extracting EXIF & pre-scaling (<2.8 MB)...');
 
     try {
       const prepared = await preparePhotoForUpload(stagedFile);
       const fname = prepared.uploadFile.name;
 
-      setForgeStatusText(
-        'Analyzing RGB color spectrum, generating AVIF/WebP plates & forging combat stats...'
-      );
+      setForgeStatusText('Analyzing RGB aura & minting Combat Card...');
 
       const formData = new FormData();
       formData.append('photos', prepared.uploadFile);
@@ -428,7 +451,7 @@ export function App() {
         setStagedFile(null);
         setStagedPreview(null);
         showToast(
-          `✦ Forged [${created?.rarity}] ${created?.title} (${created?.element} ${created?.role})! +120 Lumen Dust & +4 Shards`
+          `✦ Forged [${created?.rarity}] ${created?.title} (${created?.element} ${created?.role})!`
         );
       }
     } catch {
@@ -443,7 +466,6 @@ export function App() {
   const handleAssignToSlot = async (cardId: string, slotIdx: number) => {
     if (!player) return;
     const nextSquad = [...player.squadCardIds];
-    // Remove if already in another slot
     const existingIdx = nextSquad.indexOf(cardId);
     if (existingIdx !== -1 && nextSquad[slotIdx]) {
       nextSquad[existingIdx] = nextSquad[slotIdx];
@@ -458,7 +480,7 @@ export function App() {
     if (res.ok) {
       const data = await res.json();
       if (data.state) syncState(data.state);
-      showToast(`Assigned plate to Formation Slot ${slotIdx + 1}.`);
+      showToast(`Equipped to Formation Slot ${slotIdx + 1}.`);
     }
   };
 
@@ -482,10 +504,10 @@ export function App() {
       setFuseSacrificeId('');
       showToast(
         action === 'levelup'
-          ? `✦ Level Up! ${data.card.title} reached Lv.${data.card.level} (Power ${data.card.powerRating}).`
+          ? `✦ Level Up! ${data.card.title} reached Lv.${data.card.level} (⚔ ${data.card.powerRating}).`
           : action === 'ascend'
-          ? `✦ Foil Ascension! ${data.card.title} ascended to ${data.card.foil} Foil!`
-          : `✦ Soul Fusion Complete! Imprinted secondary trait onto ${data.card.title}!`
+          ? `✦ Foil Ascension! ${data.card.title} ascended to ${data.card.foil}!`
+          : `✦ Soul Fusion! Imprinted trait onto ${data.card.title}!`
       );
     }
   };
@@ -499,16 +521,18 @@ export function App() {
     if (res.ok) {
       const data = await res.json();
       if (data.state) syncState(data.state);
-      showToast(`Pledged allegiance to the ${faction} Faction!`);
+      showToast(`Pledged allegiance to Order of ${faction}!`);
     }
   };
 
   if (loading || !mmoState || !player) {
     return (
-      <div className="mmo-container">
-        <p style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
-          Initializing CHROMARIFT Photo-Combat MMO...
-        </p>
+      <div className="app-shell mobile-shell-frame">
+        <div className="mmo-container">
+          <p style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+            Initializing CHROMARIFT Mobile Photo-Combat MMO...
+          </p>
+        </div>
       </div>
     );
   }
@@ -516,32 +540,40 @@ export function App() {
   const rivals = mmoState.players.filter((p) => p.id !== player.id);
 
   return (
-    <div>
+    <div
+      className={`app-shell ${
+        mobileShellMode ? 'mobile-shell-frame' : 'wide-shell-frame'
+      }`}
+    >
+      {/* Mobile-Friendly Floating Toast Notification above Bottom Nav */}
       {toast && (
         <div
           style={{
             position: 'fixed',
-            bottom: '1.5rem',
-            right: '1.5rem',
+            bottom: 'calc(var(--bottom-nav-height) + var(--safe-bottom) + 0.75rem)',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            width: 'calc(100% - 1.5rem)',
+            maxWidth: '440px',
             zIndex: 1100,
             background: 'var(--bg-surface)',
             border: '1px solid var(--gold-bright)',
             color: 'var(--text-primary)',
-            padding: '0.85rem 1.2rem',
+            padding: '0.7rem 0.95rem',
             borderRadius: 'var(--radius-sm)',
             boxShadow: 'var(--shadow-card)',
             display: 'flex',
             alignItems: 'center',
-            gap: '0.6rem',
-            fontSize: '0.84rem',
+            gap: '0.55rem',
+            fontSize: '0.78rem',
           }}
         >
-          <CheckCircle2 size={16} style={{ color: 'var(--gold-bright)' }} />
+          <CheckCircle2 size={16} style={{ color: 'var(--gold-bright)', flexShrink: 0 }} />
           <span>{toast}</span>
         </div>
       )}
 
-      {/* Sticky Top MMO HUD Header */}
+      {/* STICKY TOP MOBILE STATUS HUD */}
       <header className="mmo-hud-header">
         <div className="hud-inner">
           <div
@@ -550,493 +582,552 @@ export function App() {
             id="chromarift-home-brand"
           >
             <div className="brand-emblem">
-              <Swords size={20} />
+              <Swords size={18} />
             </div>
-            <div>
+            <div style={{ minWidth: 0 }}>
               <div className="brand-title">CHROMARIFT</div>
-              <div className="brand-subtitle">Photo-Combat Social MMO</div>
+              <div className="brand-subtitle">
+                Lv.{player.level} · {player.faction}
+              </div>
             </div>
           </div>
 
-          <nav className="hud-nav" aria-label="MMO Primary Navigation">
+          {/* Inline nav only shown when user toggles Wide Desktop Mode on large screens */}
+          <nav className="hud-nav-desktop" aria-label="Desktop Navigation">
             <button
               type="button"
               className={`hud-tab ${activeTab === 'feed' ? 'active' : ''}`}
               onClick={() => setActiveTab('feed')}
-              id="nav-tab-feed"
             >
-              <Zap size={15} /> Chromastream
-            </button>
-            <button
-              type="button"
-              className={`hud-tab ${activeTab === 'forge' ? 'active' : ''}`}
-              onClick={() => setActiveTab('forge')}
-              id="nav-tab-forge"
-            >
-              <UploadCloud size={15} /> Forge Photo
+              <Zap size={14} /> Stream
             </button>
             <button
               type="button"
               className={`hud-tab ${activeTab === 'sanctum' ? 'active' : ''}`}
               onClick={() => setActiveTab('sanctum')}
-              id="nav-tab-sanctum"
             >
-              <Shield size={15} /> Squad & Sanctum ({playerCards.length})
+              <Shield size={14} /> Sanctum ({playerCards.length})
+            </button>
+            <button
+              type="button"
+              className={`hud-tab ${activeTab === 'forge' ? 'active' : ''}`}
+              onClick={() => setActiveTab('forge')}
+            >
+              <Camera size={14} /> Forge Photo
             </button>
             <button
               type="button"
               className={`hud-tab ${activeTab === 'world' ? 'active' : ''}`}
               onClick={() => setActiveTab('world')}
-              id="nav-tab-world"
             >
-              <Globe size={15} /> Rift Atlas & Raids
+              <Globe size={14} /> Rift Atlas
             </button>
             <button
               type="button"
               className={`hud-tab ${activeTab === 'leaderboard' ? 'active' : ''}`}
               onClick={() => setActiveTab('leaderboard')}
-              id="nav-tab-leaderboard"
             >
-              <Trophy size={15} /> Arena Ranks
+              <Trophy size={14} /> Ranks
             </button>
           </nav>
 
+          {/* Compact Mobile Resource Chips + Shell Toggle */}
           <div className="hud-resources">
-            <div className="resource-pill" title="Lumen Dust (Used to Level Up Cards)">
-              <Sparkles size={13} style={{ color: 'var(--gold-bright)' }} />
-              <span>Lumen:</span>
+            <div className="resource-pill" title="Lumen Dust (Level Up Cards)">
+              <Sparkles size={11} style={{ color: 'var(--gold-bright)' }} />
               <strong>{player.lumenDust}</strong>
             </div>
-            <div className="resource-pill" title="Chromatic Shards (Used for Foil Ascension)">
-              <Flame size={13} style={{ color: 'var(--elem-astral)' }} />
-              <span>Shards:</span>
+            <div className="resource-pill" title="Chromatic Shards (Foil Ascension)">
+              <Flame size={11} style={{ color: 'var(--elem-astral)' }} />
               <strong style={{ color: 'var(--elem-astral)' }}>{player.chromaticShards}</strong>
             </div>
-            <div className="resource-pill" title="Arena Rating & Level">
-              <span>Lv.{player.level}</span>
-              <span>·</span>
-              <strong>{player.eloRating} ELO</strong>
+            <div className="resource-pill" title="Arena ELO Rating">
+              <Trophy size={11} style={{ color: 'var(--gold-primary)' }} />
+              <strong>{player.eloRating}</strong>
             </div>
+
+            <button
+              type="button"
+              className="viewport-mode-btn"
+              onClick={() => setMobileShellMode((prev) => !prev)}
+              title="Switch between Mobile Phone Viewport and Wide Responsive Layout"
+              id="viewport-shell-toggle-btn"
+            >
+              {mobileShellMode ? <Monitor size={12} /> : <Smartphone size={12} />}
+              <span>{mobileShellMode ? 'Wide' : 'Mobile'}</span>
+            </button>
           </div>
         </div>
       </header>
 
       <main className="mmo-container">
-        {/* TAB 1: THE CHROMASTREAM (SOCIAL FEED + INSTANT SQUAD CHALLENGES) */}
+        {/* =========================================================
+            TAB 1: THE CHROMASTREAM (MOBILE-FIRST SOCIAL FEED)
+           ========================================================= */}
         {activeTab === 'feed' && (
           <div className="feed-layout">
             <div className="feed-stream">
-              {/* Top Callout Banner */}
-              <div
-                style={{
-                  background:
-                    'linear-gradient(135deg, hsla(38, 62%, 50%, 0.14), hsla(354, 70%, 50%, 0.1))',
-                  border: '1px solid var(--border-gold)',
-                  borderRadius: 'var(--radius-md)',
-                  padding: '1.25rem 1.5rem',
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: '1rem',
-                }}
-              >
-                <div>
-                  <div
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '0.68rem',
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.12em',
-                      color: 'var(--gold-bright)',
-                    }}
-                  >
-                    Season I · The Optical Convergence
+              {/* 1. Horizontal Story / Rival Quick-Duel & Raid Ribbon */}
+              <div className="story-bounty-ribbon" aria-label="Quick Actions and Rival Bounties">
+                {/* Node 1: Forge Photo Card */}
+                <button
+                  type="button"
+                  className="story-node"
+                  onClick={() => setActiveTab('forge')}
+                  id="hero-forge-photo-cta"
+                >
+                  <div className="story-avatar-ring">
+                    <div className="story-avatar-inner">
+                      <Camera size={20} style={{ color: 'var(--gold-bright)' }} />
+                    </div>
+                    <span
+                      className="story-tag-pill"
+                      style={{ background: 'var(--gold-primary)', color: '#08090d' }}
+                    >
+                      +FORGE
+                    </span>
                   </div>
-                  <h1
-                    style={{
-                      fontFamily: 'var(--font-display)',
-                      fontSize: '1.65rem',
-                      marginTop: '0.15rem',
-                    }}
-                  >
-                    Upload Photographs. Forge Relics. Conquer the Rift.
-                  </h1>
-                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.86rem' }}>
-                    Every photo you upload is analyzed for RGB color aura and camera EXIF telemetry
-                    to mint a combat card. Hype posts to buff their stats, or challenge any player’s
-                    squad!
-                  </p>
-                </div>
+                  <span className="story-node-name">Mint Photo</span>
+                </button>
 
-                <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+                {/* Node 2: Instant Quick Auto-Battle */}
+                <button
+                  type="button"
+                  className="story-node"
+                  onClick={() => {
+                    if (rivals[0]) handleChallengePlayer(rivals[0], 'pvp');
+                  }}
+                  id="hero-quick-battle-cta"
+                >
+                  <div className="story-avatar-ring">
+                    <div className="story-avatar-inner">
+                      <Swords size={20} style={{ color: '#f87171' }} />
+                    </div>
+                    <span className="story-tag-pill">DUEL</span>
+                  </div>
+                  <span className="story-node-name">Quick Battle</span>
+                </button>
+
+                {/* Rival Lumenmancers (1-Tap Auto-Battle) */}
+                {rivals.map((rival) => {
+                  const leadCard = mmoState.cards.find(
+                    (c) => c.id === rival.squadCardIds[0]
+                  );
+                  return (
+                    <button
+                      key={rival.id}
+                      type="button"
+                      className="story-node"
+                      onClick={() => handleChallengePlayer(rival, 'pvp')}
+                    >
+                      <div className="story-avatar-ring">
+                        <div className="story-avatar-inner">
+                          {leadCard ? (
+                            <img src={leadCard.imageUrl} alt={rival.displayName} />
+                          ) : (
+                            rival.displayName.slice(0, 2)
+                          )}
+                        </div>
+                        <span className="story-tag-pill">VS</span>
+                      </div>
+                      <span className="story-node-name">@{rival.username}</span>
+                    </button>
+                  );
+                })}
+
+                {/* Active World Raid Boss Nodes (1-Tap Raid Strike) */}
+                {mmoState.zones.slice(0, 2).map((zone) => (
                   <button
+                    key={zone.id}
                     type="button"
-                    className="btn btn-gold"
-                    onClick={() => setActiveTab('forge')}
-                    id="hero-forge-photo-cta"
+                    className="story-node"
+                    onClick={() => handleRaidBossStrike(zone)}
                   >
-                    <UploadCloud size={15} /> Upload & Forge Photo Card
+                    <div className="story-avatar-ring raid">
+                      <div className="story-avatar-inner">
+                        <img src={zone.raidBoss.imageUrl} alt={zone.raidBoss.name} />
+                      </div>
+                      <span
+                        className="story-tag-pill"
+                        style={{ background: '#a855f7' }}
+                      >
+                        RAID
+                      </span>
+                    </div>
+                    <span className="story-node-name">{zone.raidBoss.name}</span>
                   </button>
-                  <button
-                    type="button"
-                    className="btn btn-crimson"
-                    onClick={() => {
-                      const randomRival = rivals[0];
-                      if (randomRival) handleChallengePlayer(randomRival, 'pvp');
-                    }}
-                    id="hero-quick-battle-cta"
-                  >
-                    <Swords size={15} /> Quick Auto-Battle
-                  </button>
-                </div>
+                ))}
               </div>
 
-              {/* Feed Posts */}
+              {/* 2. Collapsible Mobile Active Squad Command Bar */}
+              <section className="mobile-squad-bar" aria-label="Your Active Auto-Battle Squad">
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '0.6rem',
+                        color: 'var(--gold-primary)',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.06em',
+                      }}
+                    >
+                      Active 4-Card Formation · {playerSynergies.length} Synergies
+                    </div>
+                    <div
+                      style={{
+                        fontFamily: 'var(--font-display)',
+                        fontSize: '0.96rem',
+                        fontWeight: 700,
+                      }}
+                    >
+                      {player.displayName}&apos;s Squad
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <span className="card-power-badge">⚔ {totalSquadPower}</span>
+                    <button
+                      type="button"
+                      className="btn btn-surface"
+                      style={{ minHeight: '34px', padding: '0.3rem 0.55rem', fontSize: '0.7rem' }}
+                      onClick={() => setSquadDrawerOpen((prev) => !prev)}
+                    >
+                      {squadDrawerOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    </button>
+                  </div>
+                </div>
+
+                {/* 4 Mini Portrait Slots (Tapping goes to Sanctum) */}
+                <div className="mini-squad-slots">
+                  {playerSquad.map((c, idx) => (
+                    <div
+                      key={c.id}
+                      className="mini-slot"
+                      onClick={() => setActiveTab('sanctum')}
+                      title={`Slot ${idx + 1}: ${c.title}`}
+                    >
+                      <img src={c.imageUrl} alt={c.title} />
+                      <div className="mini-slot-label">
+                        S{idx + 1} · {c.element}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Expandable Synergies & Faction Drawer */}
+                {squadDrawerOpen && (
+                  <div
+                    style={{
+                      marginTop: '0.7rem',
+                      paddingTop: '0.65rem',
+                      borderTop: '1px solid var(--border-subtle)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.55rem',
+                    }}
+                  >
+                    <div style={{ display: 'flex', gap: '0.35rem' }}>
+                      {(['Helios', 'Umbra', 'Prism'] as FactionId[]).map((fac) => (
+                        <button
+                          key={fac}
+                          type="button"
+                          onClick={() => handleSwitchFaction(fac)}
+                          className={`faction-tag faction-${fac}`}
+                          style={{
+                            flex: 1,
+                            textAlign: 'center',
+                            padding: '0.35rem',
+                            opacity: player.faction === fac ? 1 : 0.45,
+                            fontWeight: player.faction === fac ? 700 : 400,
+                          }}
+                        >
+                          {fac}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                      {playerSynergies.map((syn) => (
+                        <div
+                          key={syn.id}
+                          style={{
+                            background: 'var(--bg-surface)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: 'var(--radius-sm)',
+                            padding: '0.4rem 0.6rem',
+                            fontSize: '0.72rem',
+                          }}
+                        >
+                          <strong style={{ color: 'var(--gold-bright)' }}>✦ {syn.name}:</strong>{' '}
+                          <span style={{ color: 'var(--text-secondary)' }}>{syn.description}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.45rem' }}>
+                      <button
+                        type="button"
+                        className="btn btn-gold"
+                        onClick={() => setActiveTab('sanctum')}
+                      >
+                        <Shield size={14} /> Edit Squad
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-surface"
+                        onClick={() => setActiveTab('world')}
+                      >
+                        <Globe size={14} /> Rift Atlas
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </section>
+
+              {/* 3. Mobile-First Vertical Social Feed Posts */}
               {mmoState.posts.map((post) => {
                 const card = mmoState.cards.find((c) => c.id === post.cardId);
                 const postAuthor =
                   mmoState.players.find((p) => p.id === post.authorId) || rivals[0];
                 if (!card) return null;
 
+                const commentsOpen = Boolean(expandedCommentPostIds[post.id]);
+                const visibleComments = commentsOpen
+                  ? post.comments
+                  : post.comments.slice(-1);
+
                 return (
                   <article key={post.id} className="feed-post-card">
+                    {/* Post Author Top Row */}
+                    <div className="post-author-row">
+                      <div className="author-badge">
+                        <div className="author-avatar">
+                          {post.authorName
+                            .split(' ')
+                            .map((n) => n[0])
+                            .join('')
+                            .slice(0, 2)}
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div
+                            style={{
+                              fontWeight: 700,
+                              fontSize: '0.88rem',
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}
+                          >
+                            {post.authorName}
+                          </div>
+                          <div
+                            style={{
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: '0.64rem',
+                              color: 'var(--text-muted)',
+                            }}
+                          >
+                            @{post.authorHandle} · {post.createdAt}
+                          </div>
+                        </div>
+                      </div>
+
+                      <span className={`faction-tag faction-${post.authorFaction}`}>
+                        {post.authorFaction}
+                      </span>
+                    </div>
+
+                    {/* Caption */}
+                    <p style={{ fontSize: '0.86rem', color: 'var(--text-primary)' }}>
+                      {post.caption}
+                    </p>
+
+                    {/* Full-Width Collectible Combat Card */}
                     <CombatCardView card={card} compact={false} />
 
-                    <div className="post-meta-col">
-                      <div className="post-author-row">
-                        <div className="author-badge">
-                          <div className="author-avatar">
-                            {post.authorName
-                              .split(' ')
-                              .map((n) => n[0])
-                              .join('')
-                              .slice(0, 2)}
-                          </div>
-                          <div>
-                            <div style={{ fontWeight: 700, fontSize: '0.94rem' }}>
-                              {post.authorName}
-                            </div>
-                            <div
-                              style={{
-                                fontFamily: 'var(--font-mono)',
-                                fontSize: '0.68rem',
-                                color: 'var(--text-muted)',
-                              }}
-                            >
-                              @{post.authorHandle} · {post.createdAt}
-                            </div>
-                          </div>
-                        </div>
-
-                        <span className={`faction-tag faction-${post.authorFaction}`}>
-                          Order of {post.authorFaction}
-                        </span>
-                      </div>
-
-                      <p style={{ fontSize: '0.92rem', color: 'var(--text-primary)' }}>
-                        {post.caption}
-                      </p>
-
-                      {/* Alchemical Spectrum Telemetry Strip */}
-                      <div
-                        style={{
-                          background: 'var(--bg-surface)',
-                          border: '1px solid var(--border-subtle)',
-                          borderRadius: 'var(--radius-sm)',
-                          padding: '0.65rem 0.85rem',
-                          fontFamily: 'var(--font-mono)',
-                          fontSize: '0.69rem',
-                          color: 'var(--text-secondary)',
-                          display: 'flex',
-                          flexWrap: 'wrap',
-                          justifyContent: 'space-between',
-                          gap: '0.5rem',
-                        }}
+                    {/* Thumb-Friendly 3-Button Social + Combat Bar */}
+                    <div className="post-actions-bar">
+                      <button
+                        type="button"
+                        className="btn btn-surface"
+                        onClick={() => handleHypePost(post.id)}
+                        id={`hype-post-${post.id}`}
+                        style={{ padding: '0.5rem 0.65rem', fontSize: '0.76rem' }}
                       >
-                        <span>
-                          RGB Aura: R{card.colorTelemetry.r} · G{card.colorTelemetry.g} · B
-                          {card.colorTelemetry.b}
-                        </span>
-                        <span>Contrast: {card.colorTelemetry.contrast}</span>
-                        <span style={{ color: '#4ade80' }}>
-                          Web Optimized: -{card.savingsPercent}% ({formatBytes(card.optimizedSizeBytes)})
-                        </span>
-                      </div>
+                        <Zap size={14} style={{ color: 'var(--gold-bright)' }} />
+                        <span>Hype ({post.hypeCount})</span>
+                      </button>
 
-                      <div className="post-actions-bar">
+                      {postAuthor && (
                         <button
                           type="button"
-                          className="btn btn-surface"
-                          onClick={() => handleHypePost(post.id)}
-                          id={`hype-post-${post.id}`}
+                          className="btn btn-crimson"
+                          onClick={() => handleChallengePlayer(postAuthor, 'pvp')}
+                          id={`challenge-post-${post.id}`}
+                          style={{ padding: '0.5rem 0.65rem', fontSize: '0.76rem' }}
                         >
-                          <Zap size={14} style={{ color: 'var(--gold-bright)' }} />
-                          Hype Resonance ({post.hypeCount}) · +Stat Buff
+                          <Swords size={14} />
+                          <span>Challenge Squad</span>
                         </button>
+                      )}
 
-                        {postAuthor && (
-                          <button
-                            type="button"
-                            className="btn btn-crimson"
-                            onClick={() => handleChallengePlayer(postAuthor, 'pvp')}
-                            id={`challenge-post-${post.id}`}
-                          >
-                            <Swords size={14} /> Challenge @{post.authorHandle}&apos;s Squad
-                          </button>
-                        )}
-                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-surface"
+                        onClick={() =>
+                          setExpandedCommentPostIds((prev) => ({
+                            ...prev,
+                            [post.id]: !prev[post.id],
+                          }))
+                        }
+                        style={{ padding: '0.5rem 0.65rem', fontSize: '0.75rem' }}
+                        aria-label="Toggle Comments"
+                      >
+                        <MessageSquare size={14} />
+                        <span>{post.comments.length}</span>
+                      </button>
+                    </div>
 
-                      {/* Comments Section */}
-                      <div className="comments-box">
-                        <div
+                    {/* Compact War-Comms / Comments Box */}
+                    <div className="comments-box">
+                      {post.comments.length > 1 && !commentsOpen && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedCommentPostIds((prev) => ({
+                              ...prev,
+                              [post.id]: true,
+                            }))
+                          }
                           style={{
                             fontFamily: 'var(--font-mono)',
-                            fontSize: '0.66rem',
+                            fontSize: '0.64rem',
                             color: 'var(--text-muted)',
-                            textTransform: 'uppercase',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '0.35rem',
+                            textAlign: 'left',
                           }}
                         >
-                          <MessageSquare size={11} /> Chromastream War-Comms (
-                          {post.comments.length})
+                          View all {post.comments.length} war-comms...
+                        </button>
+                      )}
+
+                      {visibleComments.map((c) => (
+                        <div key={c.id} style={{ fontSize: '0.76rem' }}>
+                          <strong style={{ color: 'var(--gold-bright)' }}>
+                            @{c.authorHandle}:
+                          </strong>{' '}
+                          <span style={{ color: 'var(--text-secondary)' }}>{c.text}</span>
                         </div>
+                      ))}
 
-                        {post.comments.map((c) => (
-                          <div key={c.id} style={{ fontSize: '0.8rem' }}>
-                            <strong style={{ color: 'var(--gold-bright)' }}>
-                              @{c.authorHandle}:
-                            </strong>{' '}
-                            <span style={{ color: 'var(--text-secondary)' }}>{c.text}</span>
-                          </div>
-                        ))}
-
-                        <form
-                          onSubmit={(e) => handleAddComment(e, post.id)}
-                          style={{ display: 'flex', gap: '0.45rem', marginTop: '0.35rem' }}
+                      <form
+                        onSubmit={(e) => handleAddComment(e, post.id)}
+                        style={{ display: 'flex', gap: '0.4rem', marginTop: '0.2rem' }}
+                      >
+                        <input
+                          type="text"
+                          className="form-input"
+                          style={{ padding: '0.42rem 0.65rem', fontSize: '16px' }}
+                          placeholder="Transmit war-comm..."
+                          value={commentInputs[post.id] || ''}
+                          onChange={(e) =>
+                            setCommentInputs((prev) => ({
+                              ...prev,
+                              [post.id]: e.target.value,
+                            }))
+                          }
+                        />
+                        <button
+                          type="submit"
+                          className="btn btn-surface"
+                          style={{ minHeight: '38px', padding: '0.4rem 0.7rem' }}
                         >
-                          <input
-                            type="text"
-                            className="form-input"
-                            style={{ padding: '0.42rem 0.65rem', fontSize: '0.78rem' }}
-                            placeholder="Transmit war-comm or compliment..."
-                            value={commentInputs[post.id] || ''}
-                            onChange={(e) =>
-                              setCommentInputs((prev) => ({
-                                ...prev,
-                                [post.id]: e.target.value,
-                              }))
-                            }
-                          />
-                          <button
-                            type="submit"
-                            className="btn btn-surface"
-                            style={{ padding: '0.42rem 0.75rem' }}
-                          >
-                            <Send size={13} />
-                          </button>
-                        </form>
-                      </div>
+                          <Send size={13} />
+                        </button>
+                      </form>
                     </div>
                   </article>
                 );
               })}
             </div>
 
-            {/* Right Sticky Active Squad & Synergy Command Sidebar */}
-            <aside className="squad-sidebar-panel">
-              <div
+            {/* Desktop Wide-Mode Sticky Sidebar */}
+            {!mobileShellMode && (
+              <aside
                 style={{
+                  background: 'var(--bg-elevated)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-md)',
+                  padding: '1.1rem',
+                  position: 'sticky',
+                  top: '4.5rem',
                   display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
+                  flexDirection: 'column',
+                  gap: '0.85rem',
                 }}
               >
-                <div>
-                  <span
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '0.66rem',
-                      color: 'var(--gold-primary)',
-                      textTransform: 'uppercase',
-                    }}
-                  >
-                    Active Auto-Battle Formation
-                  </span>
-                  <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.2rem' }}>
-                    {player.displayName}&apos;s Squad
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.1rem' }}>
+                    Active Formation
                   </h2>
+                  <span className="card-power-badge">⚔ {totalSquadPower}</span>
                 </div>
-                <span className="card-power-badge">⚔ {totalSquadPower}</span>
-              </div>
-
-              {/* Faction Switcher */}
-              <div style={{ display: 'flex', gap: '0.35rem' }}>
-                {(['Helios', 'Umbra', 'Prism'] as FactionId[]).map((fac) => (
-                  <button
-                    key={fac}
-                    type="button"
-                    onClick={() => handleSwitchFaction(fac)}
-                    className={`faction-tag faction-${fac}`}
-                    style={{
-                      flex: 1,
-                      textAlign: 'center',
-                      opacity: player.faction === fac ? 1 : 0.45,
-                      fontWeight: player.faction === fac ? 700 : 400,
-                    }}
-                  >
-                    {fac}
-                  </button>
-                ))}
-              </div>
-
-              <div className="mini-squad-slots">
-                {playerSquad.map((c, idx) => (
-                  <div key={c.id} className="mini-slot" title={`Slot ${idx + 1}: ${c.title}`}>
-                    <img src={c.imageUrl} alt={c.title} />
-                    <div className="mini-slot-label">
-                      S{idx + 1} · {c.element}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div>
-                <div
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: '0.66rem',
-                    color: 'var(--text-muted)',
-                    textTransform: 'uppercase',
-                    marginBottom: '0.45rem',
-                  }}
-                >
-                  Active Formation Synergies ({playerSynergies.length})
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                  {playerSynergies.map((syn) => (
-                    <div
-                      key={syn.id}
-                      style={{
-                        background: 'var(--bg-surface)',
-                        border: '1px solid var(--border-subtle)',
-                        borderRadius: 'var(--radius-sm)',
-                        padding: '0.45rem 0.65rem',
-                        fontSize: '0.75rem',
-                      }}
-                    >
-                      <div style={{ fontWeight: 600, color: 'var(--gold-bright)' }}>
-                        ✦ {syn.name}
-                      </div>
-                      <div style={{ color: 'var(--text-secondary)', fontSize: '0.7rem' }}>
-                        {syn.description}
+                <div className="mini-squad-slots">
+                  {playerSquad.map((c, idx) => (
+                    <div key={c.id} className="mini-slot" onClick={() => setActiveTab('sanctum')}>
+                      <img src={c.imageUrl} alt={c.title} />
+                      <div className="mini-slot-label">
+                        S{idx + 1} · {c.element}
                       </div>
                     </div>
                   ))}
                 </div>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                 <button
                   type="button"
                   className="btn btn-gold"
                   onClick={() => setActiveTab('sanctum')}
                 >
-                  <Shield size={14} /> Edit Squad & Upgrade Cards
+                  <Shield size={14} /> Manage Squad & Vault
                 </button>
-                <button
-                  type="button"
-                  className="btn btn-surface"
-                  onClick={() => setActiveTab('world')}
-                >
-                  <Globe size={14} /> Enter Rift Atlas & Raid Bosses
-                </button>
-              </div>
-            </aside>
+              </aside>
+            )}
           </div>
         )}
 
-        {/* TAB 2: SOUL-LENS FORGE (PHOTO UPLOAD -> COMBAT CARD MINTING) */}
+        {/* =========================================================
+            TAB 2: SOUL-LENS FORGE (MOBILE CAMERA + PHOTO FORGING)
+           ========================================================= */}
         {activeTab === 'forge' && (
-          <div style={{ maxWidth: '1040px', margin: '0 auto' }}>
-            <div style={{ marginBottom: '1.5rem' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div>
               <span
                 style={{
                   fontFamily: 'var(--font-mono)',
-                  fontSize: '0.72rem',
+                  fontSize: '0.65rem',
                   color: 'var(--gold-primary)',
                   textTransform: 'uppercase',
-                  letterSpacing: '0.12em',
+                  letterSpacing: '0.1em',
                 }}
               >
-                Optical Alchemy & WebP/AVIF Pipeline
+                Optical EXIF & RGB Spectrum Forge
               </span>
-              <h1 style={{ fontFamily: 'var(--font-display)', fontSize: '2.1rem' }}>
-                The Soul-Lens Forge
+              <h1 style={{ fontFamily: 'var(--font-display)', fontSize: '1.55rem' }}>
+                Soul-Lens Camera Forge
               </h1>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.92rem' }}>
-                Upload any photograph. Our engine extracts its RGB color spectrum, contrast entropy,
-                and camera EXIF telemetry (Shutter Speed = Speed, Aperture = Crit/DEF, Focal Length
-                = Combat Role, ISO = Attack Scaling) to mint a web-optimized Combat Card.
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.82rem' }}>
+                Snap a camera photo or pick from your gallery. RGB color channels and EXIF stats
+                (Shutter = Speed, Aperture = Crit/DEF, Focal Length = Role) mint a Combat Card.
               </p>
             </div>
 
-            {/* Quick Anomaly Scanner Buttons for instant testing */}
-            <div
-              style={{
-                display: 'flex',
-                flexWrap: 'wrap',
-                gap: '0.6rem',
-                marginBottom: '1.25rem',
-                alignItems: 'center',
-              }}
-            >
-              <span
-                style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: '0.72rem',
-                  color: 'var(--text-muted)',
-                }}
-              >
-                Or Scan Procedural Camera Anomaly:
-              </span>
-              <button
-                type="button"
-                className="btn btn-surface"
-                onClick={() => handleSynthesizeAnomaly('solar')}
-                id="scan-anomaly-solar-btn"
-              >
-                <Wand2 size={14} style={{ color: 'var(--elem-solar)' }} /> Scan Solar Anomaly
-              </button>
-              <button
-                type="button"
-                className="btn btn-surface"
-                onClick={() => handleSynthesizeAnomaly('abyssal')}
-                id="scan-anomaly-abyssal-btn"
-              >
-                <Wand2 size={14} style={{ color: 'var(--elem-abyssal)' }} /> Scan Abyssal Anomaly
-              </button>
-              <button
-                type="button"
-                className="btn btn-surface"
-                onClick={() => handleSynthesizeAnomaly('crimson')}
-                id="scan-anomaly-crimson-btn"
-              >
-                <Wand2 size={14} style={{ color: 'var(--elem-crimson)' }} /> Scan Crimson Anomaly
-              </button>
-              <button
-                type="button"
-                className="btn btn-surface"
-                onClick={() => handleSynthesizeAnomaly('verdant')}
-                id="scan-anomaly-verdant-btn"
-              >
-                <Wand2 size={14} style={{ color: 'var(--elem-verdant)' }} /> Scan Verdant Anomaly
-              </button>
-            </div>
-
-            {/* Dropzone */}
+            {/* Dual Mobile Camera + Gallery Trigger Card */}
             <div
               onClick={() => fileInputRef.current?.click()}
               onDragOver={(e) => e.preventDefault()}
@@ -1050,13 +1141,13 @@ export function App() {
                 border: '1.5px dashed var(--border-gold)',
                 background: 'var(--bg-elevated)',
                 borderRadius: 'var(--radius-lg)',
-                padding: '2.5rem 2rem',
+                padding: '1.35rem 1rem',
                 textAlign: 'center',
                 cursor: 'pointer',
-                marginBottom: '1.5rem',
               }}
               id="soul-lens-dropzone"
             >
+              {/* Standard Gallery Input */}
               <input
                 ref={fileInputRef}
                 type="file"
@@ -1070,26 +1161,115 @@ export function App() {
                 }}
                 id="forge-photo-input"
               />
-              <UploadCloud
-                size={34}
-                style={{ color: 'var(--gold-bright)', marginBottom: '0.65rem' }}
+              {/* Direct Mobile Camera Capture Input */}
+              <input
+                ref={cameraInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  if (e.target.files?.[0]) {
+                    handleSelectForgeFile(e.target.files[0]);
+                  }
+                  e.target.value = '';
+                }}
               />
-              <div style={{ fontFamily: 'var(--font-display)', fontSize: '1.35rem' }}>
-                Drop a photograph here to bind its light into a Combat Card
+
+              <UploadCloud
+                size={30}
+                style={{ color: 'var(--gold-bright)', marginBottom: '0.4rem' }}
+              />
+              <div style={{ fontFamily: 'var(--font-display)', fontSize: '1.1rem' }}>
+                Bind a Photograph into a Combat Card
               </div>
               <div
                 style={{
                   fontFamily: 'var(--font-mono)',
-                  fontSize: '0.72rem',
+                  fontSize: '0.64rem',
                   color: 'var(--text-muted)',
-                  marginTop: '0.3rem',
+                  marginTop: '0.2rem',
+                  marginBottom: '0.85rem',
                 }}
               >
-                JPEG · PNG · WebP · AVIF · Automatic client pre-scaling (&lt;2.8 MB Vercel-safe) +
-                Sharp multi-tier WebP/AVIF
+                Auto WebP/AVIF Optimization (&lt;2.8 MB Vercel-Safe)
+              </div>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '0.5rem',
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  className="btn btn-gold"
+                  onClick={() => cameraInputRef.current?.click()}
+                >
+                  <Camera size={15} /> Snap Camera
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-surface"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <UploadCloud size={15} /> Photo Gallery
+                </button>
               </div>
             </div>
 
+            {/* 1-Tap Touch Scrollable Anomaly Scanner Strip */}
+            <div>
+              <div
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.64rem',
+                  color: 'var(--text-muted)',
+                  textTransform: 'uppercase',
+                  marginBottom: '0.4rem',
+                }}
+              >
+                Or 1-Tap Scan Procedural Anomaly:
+              </div>
+              <div className="h-scroll-strip">
+                <button
+                  type="button"
+                  className="btn btn-surface"
+                  onClick={() => handleSynthesizeAnomaly('solar')}
+                  id="scan-anomaly-solar-btn"
+                >
+                  <Wand2 size={13} style={{ color: 'var(--elem-solar)' }} /> Solar Obelisk
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-surface"
+                  onClick={() => handleSynthesizeAnomaly('abyssal')}
+                  id="scan-anomaly-abyssal-btn"
+                >
+                  <Wand2 size={13} style={{ color: 'var(--elem-abyssal)' }} /> Abyssal Trench
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-surface"
+                  onClick={() => handleSynthesizeAnomaly('crimson')}
+                  id="scan-anomaly-crimson-btn"
+                >
+                  <Wand2 size={13} style={{ color: 'var(--elem-crimson)' }} /> Crimson Spire
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-surface"
+                  onClick={() => handleSynthesizeAnomaly('verdant')}
+                  id="scan-anomaly-verdant-btn"
+                >
+                  <Wand2 size={13} style={{ color: 'var(--elem-verdant)' }} /> Verdant Spore
+                </button>
+              </div>
+            </div>
+
+            {/* Mobile Single-Column Staged Photo Sheet */}
             {stagedFile && (
               <form
                 onSubmit={handleForgeSubmit}
@@ -1097,144 +1277,158 @@ export function App() {
                   background: 'var(--bg-elevated)',
                   border: '1px solid var(--border-gold)',
                   borderRadius: 'var(--radius-md)',
-                  padding: '1.5rem',
-                  marginBottom: '2rem',
-                  display: 'grid',
-                  gridTemplateColumns: '220px 1fr',
-                  gap: '1.5rem',
-                  alignItems: 'start',
+                  padding: '1rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.85rem',
                 }}
               >
-                <div>
-                  {stagedPreview && (
+                {stagedPreview && (
+                  <div style={{ position: 'relative' }}>
                     <img
                       src={stagedPreview}
                       alt="Staged preview"
                       style={{
                         width: '100%',
-                        aspectRatio: '4/3',
+                        aspectRatio: '16 / 10',
                         objectFit: 'cover',
                         borderRadius: 'var(--radius-sm)',
                         border: '1px solid var(--border-subtle)',
                       }}
                     />
-                  )}
-                  <div
+                    <span
+                      className="card-pill"
+                      style={{ position: 'absolute', bottom: '0.5rem', right: '0.5rem' }}
+                    >
+                      {formatBytes(stagedFile.size)}
+                    </span>
+                  </div>
+                )}
+
+                <div>
+                  <label
                     style={{
                       fontFamily: 'var(--font-mono)',
-                      fontSize: '0.68rem',
-                      color: 'var(--text-muted)',
-                      marginTop: '0.45rem',
+                      fontSize: '0.65rem',
+                      textTransform: 'uppercase',
+                      color: 'var(--text-secondary)',
+                      display: 'block',
+                      marginBottom: '0.25rem',
                     }}
                   >
-                    {stagedFile.name} ({formatBytes(stagedFile.size)})
-                  </div>
+                    Combat Card Name
+                  </label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={forgeTitle}
+                    onChange={(e) => setForgeTitle(e.target.value)}
+                    required
+                    id="forge-card-title-input"
+                  />
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.9rem' }}>
-                  <div>
-                    <label
-                      style={{
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: '0.68rem',
-                        textTransform: 'uppercase',
-                        color: 'var(--text-secondary)',
-                        display: 'block',
-                        marginBottom: '0.3rem',
-                      }}
-                    >
-                      Combat Card Name
-                    </label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      value={forgeTitle}
-                      onChange={(e) => setForgeTitle(e.target.value)}
-                      required
-                      id="forge-card-title-input"
-                    />
-                  </div>
-
-                  <div>
-                    <label
-                      style={{
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: '0.68rem',
-                        textTransform: 'uppercase',
-                        color: 'var(--text-secondary)',
-                        display: 'block',
-                        marginBottom: '0.3rem',
-                      }}
-                    >
-                      Chromastream Battle Cry / Caption
-                    </label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      placeholder="Describe the shot or challenge rival Lumenmancers..."
-                      value={forgeCaption}
-                      onChange={(e) => setForgeCaption(e.target.value)}
-                    />
-                  </div>
-
-                  <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-                    <div style={{ flex: 1 }}>
-                      <label
-                        style={{
-                          fontFamily: 'var(--font-mono)',
-                          fontSize: '0.68rem',
-                          textTransform: 'uppercase',
-                          color: 'var(--text-secondary)',
-                          display: 'block',
-                          marginBottom: '0.3rem',
-                        }}
-                      >
-                        Equip Directly to Squad Formation
-                      </label>
-                      <select
-                        className="form-select"
-                        value={forgeEquipSlot}
-                        onChange={(e) => setForgeEquipSlot(e.target.value)}
-                      >
-                        <option value="0">Slot 1 (Frontline Vanguard)</option>
-                        <option value="1">Slot 2 (Mid-Front Bruiser)</option>
-                        <option value="2">Slot 3 (Mid-Back Striker)</option>
-                        <option value="3">Slot 4 (Backline Arcanist)</option>
-                        <option value="">Keep in Sanctum Vault</option>
-                      </select>
-                    </div>
-
-                    <label
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '0.5rem',
-                        cursor: 'pointer',
-                        marginTop: '1.3rem',
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={forgeShareFeed}
-                        onChange={(e) => setForgeShareFeed(e.target.checked)}
-                      />
-                      <span>Post to Chromastream Social Feed</span>
-                    </label>
-                  </div>
-
-                  <button
-                    type="submit"
-                    className="btn btn-gold"
-                    disabled={forging}
-                    id="submit-forge-card-btn"
-                    style={{ padding: '0.85rem' }}
+                <div>
+                  <label
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.65rem',
+                      textTransform: 'uppercase',
+                      color: 'var(--text-secondary)',
+                      display: 'block',
+                      marginBottom: '0.25rem',
+                    }}
                   >
-                    <Sparkles size={16} />
-                    {forging
-                      ? forgeStatusText || 'Forging Combat Card...'
-                      : 'Forge Combat Card & Optimize for Web (+120 Lumen, +4 Shards)'}
-                  </button>
+                    Chromastream Battle Cry / Caption
+                  </label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="Challenge rival Lumenmancers..."
+                    value={forgeCaption}
+                    onChange={(e) => setForgeCaption(e.target.value)}
+                  />
                 </div>
+
+                {/* Touch-Friendly Segmented Squad Slot Picker */}
+                <div>
+                  <label
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.65rem',
+                      textTransform: 'uppercase',
+                      color: 'var(--text-secondary)',
+                      display: 'block',
+                      marginBottom: '0.3rem',
+                    }}
+                  >
+                    Equip Directly to Squad Slot
+                  </label>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(5, 1fr)',
+                      gap: '0.35rem',
+                    }}
+                  >
+                    {[
+                      { val: '0', label: 'Slot 1' },
+                      { val: '1', label: 'Slot 2' },
+                      { val: '2', label: 'Slot 3' },
+                      { val: '3', label: 'Slot 4' },
+                      { val: '', label: 'Vault' },
+                    ].map((opt) => (
+                      <button
+                        key={opt.label}
+                        type="button"
+                        className="btn btn-surface"
+                        style={{
+                          padding: '0.4rem 0.2rem',
+                          fontSize: '0.72rem',
+                          borderColor:
+                            forgeEquipSlot === opt.val ? 'var(--gold-bright)' : undefined,
+                          color: forgeEquipSlot === opt.val ? 'var(--gold-bright)' : undefined,
+                        }}
+                        onClick={() => setForgeEquipSlot(opt.val)}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.55rem',
+                    cursor: 'pointer',
+                    fontSize: '0.84rem',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={forgeShareFeed}
+                    onChange={(e) => setForgeShareFeed(e.target.checked)}
+                    style={{ width: '18px', height: '18px' }}
+                  />
+                  <span>Share newly forged card to Chromastream Feed</span>
+                </label>
+
+                <button
+                  type="submit"
+                  className="btn btn-gold"
+                  disabled={forging}
+                  id="submit-forge-card-btn"
+                  style={{ width: '100%', padding: '0.8rem' }}
+                >
+                  <Sparkles size={16} />
+                  <span>
+                    {forging
+                      ? forgeStatusText || 'Forging Card...'
+                      : 'Forge Combat Card (+120 Lumen, +4 Shards)'}
+                  </span>
+                </button>
               </form>
             )}
 
@@ -1245,304 +1439,339 @@ export function App() {
                   background: 'var(--bg-elevated)',
                   border: '1px solid var(--gold-bright)',
                   borderRadius: 'var(--radius-md)',
-                  padding: '1.5rem',
-                  display: 'grid',
-                  gridTemplateColumns: '320px 1fr',
-                  gap: '1.5rem',
-                  alignItems: 'center',
+                  padding: '1rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.85rem',
                 }}
                 id="forged-card-result"
               >
+                <div
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.68rem',
+                    color: 'var(--gold-bright)',
+                    textTransform: 'uppercase',
+                  }}
+                >
+                  ✦ Soul-Lens Forging Complete · -{lastForgedCard.savingsPercent}% Web Optimized
+                </div>
+
                 <CombatCardView card={lastForgedCard} />
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-                  <div
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '0.72rem',
-                      color: 'var(--gold-bright)',
-                      textTransform: 'uppercase',
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                  <button
+                    type="button"
+                    className="btn btn-crimson"
+                    onClick={() => {
+                      if (rivals[0]) handleChallengePlayer(rivals[0], 'pvp');
                     }}
                   >
-                    ✦ Soul-Lens Forging Complete · Alchemical Telemetry
-                  </div>
-                  <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.75rem' }}>
-                    {lastForgedCard.title} ({lastForgedCard.rarity} {lastForgedCard.element}{' '}
-                    {lastForgedCard.role})
-                  </h2>
-                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                    Derived from RGB mean ({lastForgedCard.colorTelemetry.r},{' '}
-                    {lastForgedCard.colorTelemetry.g}, {lastForgedCard.colorTelemetry.b}) and
-                    contrast index {lastForgedCard.colorTelemetry.contrast}. Web payload compressed
-                    from {formatBytes(lastForgedCard.originalSizeBytes)} to{' '}
-                    {formatBytes(lastForgedCard.optimizedSizeBytes)} (-
-                    {lastForgedCard.savingsPercent}%).
-                  </p>
-                  <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                    <button
-                      type="button"
-                      className="btn btn-crimson"
-                      onClick={() => {
-                        if (rivals[0]) handleChallengePlayer(rivals[0], 'pvp');
-                      }}
-                    >
-                      <Swords size={15} /> Test New Card in Auto-Battle
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-surface"
-                      onClick={() => setActiveTab('feed')}
-                    >
-                      View on Chromastream Feed
-                    </button>
-                  </div>
+                    <Swords size={14} /> Battle Test
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-surface"
+                    onClick={() => setActiveTab('feed')}
+                  >
+                    View in Stream
+                  </button>
                 </div>
               </div>
             )}
           </div>
         )}
 
-        {/* TAB 3: SQUAD & CARD SANCTUM (DECK BUILDER, LEVEL UP, FOIL ASCENSION & SOUL FUSION) */}
+        {/* =========================================================
+            TAB 3: SQUAD & SANCTUM (2x2 MOBILE FORMATION + VAULT)
+           ========================================================= */}
         {activeTab === 'sanctum' && (
-          <div>
-            {/* Active 4-Card Formation Builder */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.15rem' }}>
+            {/* Active 4-Card Formation Builder (2x2 Mobile Tactical Grid) */}
             <div
               style={{
                 background: 'var(--bg-elevated)',
                 border: '1px solid var(--border-gold)',
                 borderRadius: 'var(--radius-md)',
-                padding: '1.5rem',
-                marginBottom: '2rem',
+                padding: '0.9rem',
               }}
             >
               <div
                 style={{
                   display: 'flex',
-                  flexWrap: 'wrap',
                   justifyContent: 'space-between',
                   alignItems: 'center',
-                  gap: '1rem',
-                  marginBottom: '1.25rem',
+                  gap: '0.5rem',
+                  marginBottom: '0.6rem',
                 }}
               >
                 <div>
                   <span
                     style={{
                       fontFamily: 'var(--font-mono)',
-                      fontSize: '0.7rem',
+                      fontSize: '0.62rem',
                       color: 'var(--gold-primary)',
                       textTransform: 'uppercase',
                     }}
                   >
-                    Pre-Battle Tactical Configuration · Total Power ⚔ {totalSquadPower}
+                    Active 4-Card Formation
                   </span>
-                  <h1 style={{ fontFamily: 'var(--font-display)', fontSize: '1.85rem' }}>
-                    Active 4-Card Auto-Battle Formation
+                  <h1 style={{ fontFamily: 'var(--font-display)', fontSize: '1.25rem' }}>
+                    Battle Squad
                   </h1>
                 </div>
-
-                <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap' }}>
-                  {playerSynergies.map((syn) => (
-                    <span
-                      key={syn.id}
-                      className="card-pill"
-                      style={{ borderColor: 'var(--border-gold)', color: 'var(--gold-bright)' }}
-                      title={syn.description}
-                    >
-                      ✦ {syn.name}
-                    </span>
-                  ))}
-                </div>
+                <span className="card-power-badge">⚔ {totalSquadPower}</span>
               </div>
 
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-                  gap: '1.15rem',
-                }}
-              >
+              {/* Horizontally Scrollable Synergy Pills */}
+              <div className="h-scroll-strip" style={{ marginBottom: '0.75rem' }}>
+                {playerSynergies.map((syn) => (
+                  <span
+                    key={syn.id}
+                    className="card-pill"
+                    style={{ borderColor: 'var(--border-gold)', color: 'var(--gold-bright)' }}
+                    title={syn.description}
+                  >
+                    ✦ {syn.name}
+                  </span>
+                ))}
+              </div>
+
+              <div className="sanctum-squad-grid">
                 {playerSquad.map((card, idx) => (
                   <CombatCardView
                     key={card.id}
                     card={card}
-                    slotBadge={`SLOT ${idx + 1} · ${
-                      idx === 0 ? 'FRONTLINE' : idx === 3 ? 'BACKLINE' : 'MIDLINE'
-                    }`}
+                    compact={true}
+                    slotBadge={`S${idx + 1} ${idx === 0 ? 'FRONT' : idx === 3 ? 'BACK' : 'MID'}`}
                   />
                 ))}
               </div>
             </div>
 
-            {/* Full Card Collection & Upgrades */}
-            <div style={{ marginBottom: '1rem' }}>
-              <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.65rem' }}>
-                Sanctum Vault & Relic Ascension ({playerCards.length} Cards)
-              </h2>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.88rem' }}>
-                Spend Lumen Dust to Level Up, Chromatic Shards to Foil-Ascend (Holo → Prismatic →
-                Mythic Relic), or Soul-Fuse spare cards to imprint secondary optical traits.
-              </p>
-            </div>
+            {/* Vault Filter Strip & Collection */}
+            <div>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'baseline',
+                  marginBottom: '0.5rem',
+                }}
+              >
+                <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.25rem' }}>
+                  Sanctum Vault ({filteredVaultCards.length})
+                </h2>
+                <span
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.65rem',
+                    color: 'var(--text-muted)',
+                  }}
+                >
+                  Tap Slot 1–4 to equip
+                </span>
+              </div>
 
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(305px, 1fr))',
-                gap: '1.35rem',
-              }}
-            >
-              {playerCards.map((card) => {
-                const inSquadIdx = player.squadCardIds.indexOf(card.id);
-                const levelCost = card.level * 100;
+              {/* Touch Filter Pills */}
+              <div className="h-scroll-strip" style={{ marginBottom: '0.85rem' }}>
+                {(
+                  [
+                    'ALL',
+                    'EQUIPPED',
+                    'Solar',
+                    'Abyssal',
+                    'Crimson',
+                    'Verdant',
+                    'Astral',
+                    'Monochrome',
+                  ] as const
+                ).map((pill) => (
+                  <button
+                    key={pill}
+                    type="button"
+                    className="btn btn-surface"
+                    style={{
+                      minHeight: '34px',
+                      padding: '0.3rem 0.7rem',
+                      fontSize: '0.72rem',
+                      borderRadius: '999px',
+                      borderColor: vaultFilter === pill ? 'var(--gold-bright)' : undefined,
+                      color: vaultFilter === pill ? 'var(--gold-bright)' : undefined,
+                    }}
+                    onClick={() => setVaultFilter(pill)}
+                  >
+                    {pill}
+                  </button>
+                ))}
+              </div>
 
-                return (
-                  <CombatCardView
-                    key={card.id}
-                    card={card}
-                    slotBadge={inSquadIdx !== -1 ? `EQUIPPED S${inSquadIdx + 1}` : undefined}
-                    footerActions={
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
-                        {/* Equip Slot Selector */}
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.3rem' }}>
-                          {[0, 1, 2, 3].map((slot) => (
-                            <button
-                              key={slot}
-                              type="button"
-                              className="btn btn-surface"
-                              style={{
-                                padding: '0.3rem',
-                                fontSize: '0.7rem',
-                                borderColor:
-                                  inSquadIdx === slot ? 'var(--gold-bright)' : undefined,
-                                color: inSquadIdx === slot ? 'var(--gold-bright)' : undefined,
-                              }}
-                              onClick={() => handleAssignToSlot(card.id, slot)}
-                            >
-                              Slot {slot + 1}
-                            </button>
-                          ))}
-                        </div>
+              <div className="sanctum-vault-grid">
+                {filteredVaultCards.map((card) => {
+                  const inSquadIdx = player.squadCardIds.indexOf(card.id);
+                  const levelCost = card.level * 100;
 
-                        {/* Level Up / Foil Ascend / Soul Fuse Buttons */}
-                        <div style={{ display: 'flex', gap: '0.35rem' }}>
-                          <button
-                            type="button"
-                            className="btn btn-gold"
-                            style={{ flex: 1, padding: '0.45rem', fontSize: '0.73rem' }}
-                            onClick={() => handleUpgradeCard(card.id, 'levelup')}
-                          >
-                            <ArrowUpCircle size={13} /> Lv.Up ({levelCost} Lumen)
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-surface"
-                            style={{ flex: 1, padding: '0.45rem', fontSize: '0.73rem' }}
-                            onClick={() => handleUpgradeCard(card.id, 'ascend')}
-                          >
-                            <Sparkles size={13} /> Foil (8 Shards)
-                          </button>
-                          {playerCards.length > 1 && (
-                            <button
-                              type="button"
-                              className="btn btn-surface"
-                              style={{ padding: '0.45rem 0.6rem', fontSize: '0.73rem' }}
-                              onClick={() => setFuseTargetCardId(card.id)}
-                              title="Soul-Fuse another card into this card"
-                            >
-                              <Layers size={13} />
-                            </button>
-                          )}
-                        </div>
-
-                        {fuseTargetCardId === card.id && (
+                  return (
+                    <CombatCardView
+                      key={card.id}
+                      card={card}
+                      slotBadge={inSquadIdx !== -1 ? `EQUIPPED S${inSquadIdx + 1}` : undefined}
+                      footerActions={
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+                          {/* Equip Slot Selector */}
                           <div
                             style={{
-                              background: 'var(--bg-void)',
-                              border: '1px solid var(--border-gold)',
-                              borderRadius: 'var(--radius-sm)',
-                              padding: '0.6rem',
-                              marginTop: '0.25rem',
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(4, 1fr)',
+                              gap: '0.35rem',
                             }}
                           >
-                            <div
-                              style={{
-                                fontFamily: 'var(--font-mono)',
-                                fontSize: '0.65rem',
-                                color: 'var(--gold-bright)',
-                                marginBottom: '0.35rem',
-                              }}
-                            >
-                              Select Card to Sacrifice (+18% Stats + Trait Imprint):
-                            </div>
-                            <select
-                              className="form-select"
-                              style={{ marginBottom: '0.4rem', fontSize: '0.75rem' }}
-                              value={fuseSacrificeId}
-                              onChange={(e) => setFuseSacrificeId(e.target.value)}
-                            >
-                              <option value="">— Choose card —</option>
-                              {playerCards
-                                .filter((c) => c.id !== card.id)
-                                .map((c) => (
-                                  <option key={c.id} value={c.id}>
-                                    {c.title} ({c.opticalTrait})
-                                  </option>
-                                ))}
-                            </select>
-                            <div style={{ display: 'flex', gap: '0.35rem' }}>
+                            {[0, 1, 2, 3].map((slot) => (
                               <button
+                                key={slot}
                                 type="button"
-                                className="btn btn-crimson"
-                                style={{ flex: 1, padding: '0.35rem', fontSize: '0.72rem' }}
-                                disabled={!fuseSacrificeId}
-                                onClick={() =>
-                                  handleUpgradeCard(card.id, 'fuse', fuseSacrificeId)
-                                }
+                                className="btn btn-surface"
+                                style={{
+                                  minHeight: '38px',
+                                  padding: '0.3rem',
+                                  fontSize: '0.72rem',
+                                  borderColor:
+                                    inSquadIdx === slot ? 'var(--gold-bright)' : undefined,
+                                  color: inSquadIdx === slot ? 'var(--gold-bright)' : undefined,
+                                }}
+                                onClick={() => handleAssignToSlot(card.id, slot)}
                               >
-                                Confirm Fusion
+                                Slot {slot + 1}
                               </button>
+                            ))}
+                          </div>
+
+                          {/* Level Up / Foil Ascend / Soul Fuse Buttons */}
+                          <div style={{ display: 'flex', gap: '0.35rem' }}>
+                            <button
+                              type="button"
+                              className="btn btn-gold"
+                              style={{ flex: 1, padding: '0.45rem', fontSize: '0.74rem' }}
+                              onClick={() => handleUpgradeCard(card.id, 'levelup')}
+                            >
+                              <ArrowUpCircle size={14} /> Lv.Up ({levelCost})
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-surface"
+                              style={{ flex: 1, padding: '0.45rem', fontSize: '0.74rem' }}
+                              onClick={() => handleUpgradeCard(card.id, 'ascend')}
+                            >
+                              <Sparkles size={14} /> Foil (8)
+                            </button>
+                            {playerCards.length > 1 && (
                               <button
                                 type="button"
                                 className="btn btn-surface"
-                                style={{ padding: '0.35rem 0.6rem', fontSize: '0.72rem' }}
-                                onClick={() => setFuseTargetCardId(null)}
+                                style={{ padding: '0.45rem 0.65rem', fontSize: '0.74rem' }}
+                                onClick={() =>
+                                  setFuseTargetCardId((prev) =>
+                                    prev === card.id ? null : card.id
+                                  )
+                                }
+                                title="Soul-Fuse another card into this card"
                               >
-                                Cancel
+                                <Layers size={14} />
                               </button>
-                            </div>
+                            )}
                           </div>
-                        )}
-                      </div>
-                    }
-                  />
-                );
-              })}
+
+                          {fuseTargetCardId === card.id && (
+                            <div
+                              style={{
+                                background: 'var(--bg-void)',
+                                border: '1px solid var(--border-gold)',
+                                borderRadius: 'var(--radius-sm)',
+                                padding: '0.65rem',
+                                marginTop: '0.2rem',
+                              }}
+                            >
+                              <div
+                                style={{
+                                  fontFamily: 'var(--font-mono)',
+                                  fontSize: '0.64rem',
+                                  color: 'var(--gold-bright)',
+                                  marginBottom: '0.35rem',
+                                }}
+                              >
+                                Sacrifice Card (+18% Stats + Trait Imprint):
+                              </div>
+                              <select
+                                className="form-select"
+                                style={{ marginBottom: '0.45rem' }}
+                                value={fuseSacrificeId}
+                                onChange={(e) => setFuseSacrificeId(e.target.value)}
+                              >
+                                <option value="">— Choose card —</option>
+                                {playerCards
+                                  .filter((c) => c.id !== card.id)
+                                  .map((c) => (
+                                    <option key={c.id} value={c.id}>
+                                      {c.title} ({c.opticalTrait})
+                                    </option>
+                                  ))}
+                              </select>
+                              <div style={{ display: 'flex', gap: '0.4rem' }}>
+                                <button
+                                  type="button"
+                                  className="btn btn-crimson"
+                                  style={{ flex: 1 }}
+                                  disabled={!fuseSacrificeId}
+                                  onClick={() =>
+                                    handleUpgradeCard(card.id, 'fuse', fuseSacrificeId)
+                                  }
+                                >
+                                  Confirm Fusion
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-surface"
+                                  onClick={() => setFuseTargetCardId(null)}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      }
+                    />
+                  );
+                })}
+              </div>
             </div>
           </div>
         )}
 
-        {/* TAB 4: THE RIFT ATLAS (MMO WORLD TERRITORY WAR & COLOSSAL RAID BOSSES) */}
+        {/* =========================================================
+            TAB 4: THE RIFT ATLAS (TERRITORY WAR & WORLD RAID BOSSES)
+           ========================================================= */}
         {activeTab === 'world' && (
-          <div>
-            <div style={{ marginBottom: '1.5rem' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div>
               <span
                 style={{
                   fontFamily: 'var(--font-mono)',
-                  fontSize: '0.72rem',
+                  fontSize: '0.65rem',
                   color: 'var(--gold-primary)',
                   textTransform: 'uppercase',
-                  letterSpacing: '0.12em',
+                  letterSpacing: '0.1em',
                 }}
               >
-                Persistent 3-Faction Territory War & Co-Op World Bosses
+                3-Faction Territory War & Co-Op World Bosses
               </span>
-              <h1 style={{ fontFamily: 'var(--font-display)', fontSize: '2.1rem' }}>
+              <h1 style={{ fontFamily: 'var(--font-display)', fontSize: '1.55rem' }}>
                 The Rift Atlas
               </h1>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.92rem' }}>
-                Deploy your 4-card squad to conquer Sector Guardians for the{' '}
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.82rem' }}>
+                Conquer Sector Guardians for the{' '}
                 <strong style={{ color: 'var(--gold-bright)' }}>Order of {player.faction}</strong>{' '}
-                or launch Raid Strikes against Colossal World Bosses.
+                or launch Raid Strikes against Colossal Bosses.
               </p>
             </div>
 
@@ -1564,8 +1793,8 @@ export function App() {
                           position: 'absolute',
                           inset: 0,
                           background:
-                            'linear-gradient(to top, rgba(8,9,13,0.95) 10%, rgba(8,9,13,0.25) 100%)',
-                          padding: '1rem 1.25rem',
+                            'linear-gradient(to top, rgba(8,9,13,0.95) 12%, rgba(8,9,13,0.25) 100%)',
+                          padding: '0.85rem 1rem',
                           display: 'flex',
                           flexDirection: 'column',
                           justifyContent: 'flex-end',
@@ -1574,7 +1803,7 @@ export function App() {
                         <div
                           style={{
                             fontFamily: 'var(--font-mono)',
-                            fontSize: '0.68rem',
+                            fontSize: '0.62rem',
                             color: 'var(--gold-bright)',
                             textTransform: 'uppercase',
                           }}
@@ -1584,20 +1813,28 @@ export function App() {
                         <h2
                           style={{
                             fontFamily: 'var(--font-display)',
-                            fontSize: '1.5rem',
+                            fontSize: '1.25rem',
                             display: 'flex',
                             alignItems: 'center',
-                            gap: '0.5rem',
+                            gap: '0.45rem',
                           }}
                         >
-                          <ElementIcon element={zone.element} size={18} />
+                          <ElementIcon element={zone.element} size={16} />
                           {zone.name}
                         </h2>
                       </div>
                     </div>
 
-                    <div style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem', flex: 1 }}>
-                      <p style={{ color: 'var(--text-secondary)', fontSize: '0.86rem' }}>
+                    <div
+                      style={{
+                        padding: '0.9rem',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.75rem',
+                        flex: 1,
+                      }}
+                    >
+                      <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
                         {zone.description}
                       </p>
 
@@ -1608,7 +1845,7 @@ export function App() {
                             display: 'flex',
                             justifyContent: 'space-between',
                             fontFamily: 'var(--font-mono)',
-                            fontSize: '0.68rem',
+                            fontSize: '0.64rem',
                           }}
                         >
                           <span style={{ color: 'var(--elem-solar)' }}>
@@ -1649,7 +1886,7 @@ export function App() {
                           background: 'var(--bg-surface)',
                           border: '1px solid var(--border-subtle)',
                           borderRadius: 'var(--radius-sm)',
-                          padding: '0.85rem',
+                          padding: '0.7rem',
                         }}
                       >
                         <div
@@ -1657,54 +1894,53 @@ export function App() {
                             display: 'flex',
                             justifyContent: 'space-between',
                             alignItems: 'center',
-                            marginBottom: '0.25rem',
+                            marginBottom: '0.2rem',
                           }}
                         >
-                          <strong style={{ color: '#f87171', fontSize: '0.86rem' }}>
+                          <strong style={{ color: '#f87171', fontSize: '0.82rem' }}>
                             ☠ {zone.raidBoss.name}
                           </strong>
                           <span
                             style={{
                               fontFamily: 'var(--font-mono)',
-                              fontSize: '0.7rem',
+                              fontSize: '0.65rem',
                               color: 'var(--gold-bright)',
                             }}
                           >
-                            {zone.raidBoss.currentHp.toLocaleString()} /{' '}
-                            {zone.raidBoss.maxHp.toLocaleString()} HP
+                            {zone.raidBoss.currentHp.toLocaleString()} HP
                           </span>
                         </div>
-                        <div className="hp-bar-track" style={{ marginBottom: '0.45rem' }}>
+                        <div className="hp-bar-track" style={{ marginBottom: '0.4rem' }}>
                           <div
                             className="hp-bar-fill enemy"
                             style={{ width: `${bossPct}%` }}
                           />
                         </div>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
                           <strong>{zone.raidBoss.abilityName}:</strong> {zone.raidBoss.abilityDesc}
                         </div>
                       </div>
 
-                      <div style={{ display: 'flex', gap: '0.6rem', marginTop: 'auto' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
                         {guardian && (
                           <button
                             type="button"
                             className="btn btn-surface"
-                            style={{ flex: 1 }}
+                            style={{ fontSize: '0.75rem', padding: '0.5rem' }}
                             onClick={() =>
                               handleChallengePlayer(guardian, 'territory', zone.id)
                             }
                           >
-                            <Swords size={14} /> Conquer Sector (+6% {player.faction})
+                            <Swords size={14} /> Conquer (+6%)
                           </button>
                         )}
                         <button
                           type="button"
                           className="btn btn-crimson"
-                          style={{ flex: 1 }}
+                          style={{ fontSize: '0.75rem', padding: '0.5rem' }}
                           onClick={() => handleRaidBossStrike(zone)}
                         >
-                          <Flame size={14} /> Raid Boss (+{zone.raidBoss.rewardLumen} Lumen)
+                          <Flame size={14} /> Raid (+{zone.raidBoss.rewardLumen})
                         </button>
                       </div>
                     </div>
@@ -1715,27 +1951,29 @@ export function App() {
           </div>
         )}
 
-        {/* TAB 5: ARENA RANKS & GLOBAL MMO LEADERBOARD */}
+        {/* =========================================================
+            TAB 5: ARENA RANKS & MOBILE PANTHEON LEADERBOARD
+           ========================================================= */}
         {activeTab === 'leaderboard' && (
-          <div style={{ maxWidth: '980px', margin: '0 auto' }}>
-            <div style={{ marginBottom: '1.5rem' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.9rem' }}>
+            <div>
               <span
                 style={{
                   fontFamily: 'var(--font-mono)',
-                  fontSize: '0.72rem',
+                  fontSize: '0.65rem',
                   color: 'var(--gold-primary)',
                   textTransform: 'uppercase',
-                  letterSpacing: '0.12em',
+                  letterSpacing: '0.1em',
                 }}
               >
                 Grand Auto-Arena Standings
               </span>
-              <h1 style={{ fontFamily: 'var(--font-display)', fontSize: '2.1rem' }}>
-                Chromarift Pantheon Leaderboard
+              <h1 style={{ fontFamily: 'var(--font-display)', fontSize: '1.55rem' }}>
+                Pantheon Leaderboard
               </h1>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
               {[...mmoState.players]
                 .sort((a, b) => b.eloRating - a.eloRating)
                 .map((p, idx) => {
@@ -1753,63 +1991,79 @@ export function App() {
                           p.id === player.id ? 'var(--gold-bright)' : 'var(--border-subtle)'
                         }`,
                         borderRadius: 'var(--radius-md)',
-                        padding: '1rem 1.35rem',
+                        padding: '0.85rem 0.95rem',
                         display: 'flex',
-                        flexWrap: 'wrap',
                         alignItems: 'center',
                         justifyContent: 'space-between',
-                        gap: '1rem',
+                        gap: '0.65rem',
                       }}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.7rem',
+                          minWidth: 0,
+                        }}
+                      >
                         <div
                           style={{
                             fontFamily: 'var(--font-display)',
-                            fontSize: '1.4rem',
+                            fontSize: '1.15rem',
                             fontWeight: 800,
                             color: idx === 0 ? 'var(--gold-bright)' : 'var(--text-muted)',
-                            width: '32px',
+                            width: '26px',
+                            flexShrink: 0,
                           }}
                         >
                           #{idx + 1}
                         </div>
-                        <div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            <strong style={{ fontSize: '1rem' }}>{p.displayName}</strong>
+                        <div style={{ minWidth: 0 }}>
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.4rem',
+                              flexWrap: 'wrap',
+                            }}
+                          >
+                            <strong style={{ fontSize: '0.92rem' }}>{p.displayName}</strong>
                             <span className={`faction-tag faction-${p.faction}`}>
                               {p.faction}
                             </span>
-                            {p.id === player.id && (
-                              <span
-                                style={{
-                                  fontFamily: 'var(--font-mono)',
-                                  fontSize: '0.65rem',
-                                  color: 'var(--gold-bright)',
-                                }}
-                              >
-                                (YOU)
-                              </span>
-                            )}
                           </div>
                           <div
                             style={{
                               fontFamily: 'var(--font-mono)',
-                              fontSize: '0.72rem',
+                              fontSize: '0.64rem',
                               color: 'var(--text-muted)',
                             }}
                           >
-                            @{p.username} · {p.title} · Lv.{p.level} · {p.wins}W / {p.losses}L
+                            @{p.username} · ⚔ {pPower} · {p.wins}W/{p.losses}L
                           </div>
                         </div>
                       </div>
 
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.6rem',
+                          flexShrink: 0,
+                        }}
+                      >
                         <div style={{ textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-                          <div style={{ color: 'var(--gold-bright)', fontWeight: 700 }}>
-                            {p.eloRating} ELO
+                          <div
+                            style={{
+                              color: 'var(--gold-bright)',
+                              fontWeight: 700,
+                              fontSize: '0.82rem',
+                            }}
+                          >
+                            {p.eloRating}
                           </div>
-                          <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)' }}>
-                            Squad Power: ⚔ {pPower}
+                          <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)' }}>
+                            ELO
                           </div>
                         </div>
 
@@ -1817,9 +2071,10 @@ export function App() {
                           <button
                             type="button"
                             className="btn btn-crimson"
+                            style={{ minHeight: '36px', padding: '0.4rem 0.65rem', fontSize: '0.74rem' }}
                             onClick={() => handleChallengePlayer(p, 'pvp')}
                           >
-                            <Swords size={14} /> Challenge
+                            <Swords size={13} /> Duel
                           </button>
                         )}
                       </div>
@@ -1830,6 +2085,68 @@ export function App() {
           </div>
         )}
       </main>
+
+      {/* =========================================================
+          FIXED BOTTOM THUMB-ZONE NAVIGATION BAR
+         ========================================================= */}
+      <nav className="mmo-bottom-nav" aria-label="MMO Primary Bottom Navigation">
+        <div className="bottom-nav-inner">
+          <button
+            type="button"
+            className={`bottom-nav-item ${activeTab === 'feed' ? 'active' : ''}`}
+            onClick={() => setActiveTab('feed')}
+            id="nav-tab-feed"
+          >
+            <Zap size={19} />
+            <span>Stream</span>
+          </button>
+
+          <button
+            type="button"
+            className={`bottom-nav-item ${activeTab === 'sanctum' ? 'active' : ''}`}
+            onClick={() => setActiveTab('sanctum')}
+            id="nav-tab-sanctum"
+          >
+            <Shield size={19} />
+            <span>Sanctum</span>
+            <span className="nav-badge-count">{playerCards.length}</span>
+          </button>
+
+          <button
+            type="button"
+            className={`bottom-nav-item forge-orb-btn ${
+              activeTab === 'forge' ? 'active' : ''
+            }`}
+            onClick={() => setActiveTab('forge')}
+            id="nav-tab-forge"
+          >
+            <div className="forge-orb-icon">
+              <Camera size={21} />
+            </div>
+            <span style={{ color: 'var(--gold-bright)', fontWeight: 700 }}>Forge</span>
+          </button>
+
+          <button
+            type="button"
+            className={`bottom-nav-item ${activeTab === 'world' ? 'active' : ''}`}
+            onClick={() => setActiveTab('world')}
+            id="nav-tab-world"
+          >
+            <Globe size={19} />
+            <span>Atlas</span>
+          </button>
+
+          <button
+            type="button"
+            className={`bottom-nav-item ${activeTab === 'leaderboard' ? 'active' : ''}`}
+            onClick={() => setActiveTab('leaderboard')}
+            id="nav-tab-leaderboard"
+          >
+            <Trophy size={19} />
+            <span>Ranks</span>
+          </button>
+        </div>
+      </nav>
 
       {/* Auto-Battle Playback Arena Modal */}
       {activeSimulation && (

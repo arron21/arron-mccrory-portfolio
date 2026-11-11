@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Flame,
   Sun,
@@ -9,8 +9,10 @@ import {
   Zap,
   Camera,
   Shield,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
-import type { MmoCard, ElementType } from '../types.ts';
+import { formatBytes, type MmoCard, type ElementType } from '../types.ts';
 
 interface CombatCardViewProps {
   card: MmoCard;
@@ -51,11 +53,12 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
   slotBadge,
   footerActions,
 }) => {
+  const [showTelemetry, setShowTelemetry] = useState(false);
   const elemColor = ELEMENT_COLORS[card.element] || 'var(--gold-primary)';
 
   return (
     <article className={`combat-card foil-${card.foil}`}>
-      <div className="card-art-wrap">
+      <div className="card-art-wrap" style={compact ? { aspectRatio: '16 / 10' } : undefined}>
         <img src={card.imageUrl} alt={card.title} loading="lazy" />
         {card.foil !== 'Standard' && <div className="card-foil-glare" />}
 
@@ -63,7 +66,7 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
           <span className="card-pill" style={{ borderColor: elemColor }}>
             <ElementIcon element={card.element} size={12} />
             <span>{card.element}</span>
-            <span style={{ opacity: 0.65 }}>· Lv.{card.level}</span>
+            <span style={{ opacity: 0.7 }}>· Lv.{card.level}</span>
           </span>
 
           <span className="card-pill">
@@ -79,11 +82,19 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
         </div>
 
         <div className="card-art-bottom">
-          <div className="card-title-group">
+          <div className="card-title-group" style={{ minWidth: 0 }}>
             <div className="card-epithet">
               {card.role} · {card.epithet}
             </div>
-            <h3>{card.title}</h3>
+            <h3
+              style={{
+                whiteSpace: compact ? 'nowrap' : 'normal',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {card.title}
+            </h3>
           </div>
           <div className="card-power-badge" title="Combat Power Rating">
             ⚔ {card.powerRating}
@@ -129,9 +140,10 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
           style={{
             display: 'flex',
             flexWrap: 'wrap',
+            alignItems: 'center',
             gap: '0.35rem',
             fontFamily: 'var(--font-mono)',
-            fontSize: '0.66rem',
+            fontSize: '0.64rem',
           }}
         >
           <span
@@ -179,25 +191,94 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
               <span>✦ {card.ability.name}</span>
               <span className="ability-trigger-tag">{card.ability.triggerLabel}</span>
             </div>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.73rem', lineHeight: 1.45 }}>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.73rem', lineHeight: 1.42 }}>
               {card.ability.description}
             </p>
           </div>
         )}
 
-        <div className="card-exif-strip">
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
-            <Camera size={11} />
-            {card.exif.camera || 'Optical Plate'}
+        {/* Tap-to-Expand EXIF & RGB Spectrum Telemetry Strip */}
+        <button
+          type="button"
+          className="card-exif-strip"
+          onClick={() => setShowTelemetry((prev) => !prev)}
+          style={{ width: '100%', textAlign: 'left' }}
+        >
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.3rem',
+              minWidth: 0,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <Camera size={11} style={{ color: 'var(--gold-primary)', flexShrink: 0 }} />
+            <span>{card.exif.camera || 'Optical Plate'}</span>
           </span>
-          <span>
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.25rem',
+              flexShrink: 0,
+              color: 'var(--text-secondary)',
+            }}
+          >
             {[card.exif.focalLength, card.exif.aperture, card.exif.shutterSpeed]
               .filter(Boolean)
+              .slice(0, 2)
               .join(' · ')}
+            {showTelemetry ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
           </span>
-        </div>
+        </button>
 
-        {footerActions && <div style={{ marginTop: '0.25rem' }}>{footerActions}</div>}
+        {showTelemetry && (
+          <div
+            style={{
+              background: 'var(--bg-surface)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-sm)',
+              padding: '0.5rem 0.65rem',
+              fontFamily: 'var(--font-mono)',
+              fontSize: '0.64rem',
+              color: 'var(--text-secondary)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.25rem',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>
+                RGB Spectrum: R{card.colorTelemetry.r} · G{card.colorTelemetry.g} · B
+                {card.colorTelemetry.b}
+              </span>
+              <span>Contrast: {card.colorTelemetry.contrast}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>
+                EXIF:{' '}
+                {[
+                  card.exif.focalLength,
+                  card.exif.aperture,
+                  card.exif.shutterSpeed,
+                  card.exif.iso,
+                ]
+                  .filter(Boolean)
+                  .join(' · ') || 'Standard Telemetry'}
+              </span>
+              {card.optimizedSizeBytes > 0 && (
+                <span style={{ color: '#4ade80' }}>
+                  -{card.savingsPercent}% ({formatBytes(card.optimizedSizeBytes)})
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {footerActions && <div style={{ marginTop: '0.2rem' }}>{footerActions}</div>}
       </div>
     </article>
   );
