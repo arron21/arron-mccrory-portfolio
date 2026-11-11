@@ -13,15 +13,32 @@ export interface SessionUser {
 
 const COOKIE_NAME = 'arron_portfolio_session';
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 14; // 14 days
+const SESSION_SECRET =
+  process.env.SESSION_SECRET ||
+  process.env.GITHUB_CLIENT_SECRET ||
+  process.env.ADMIN_PASSCODE ||
+  'arron-mccrory-portfolio-studio-hmac-key-2026';
+
+function signPayload(payloadB64: string): string {
+  return crypto.createHmac('sha256', SESSION_SECRET).update(payloadB64).digest('base64url');
+}
 
 export function createSession(res: Response, user: SessionUser): string {
-  const token = crypto.randomBytes(32).toString('hex');
   const expiresAt = Date.now() + SESSION_TTL_MS;
+  const payloadB64 = Buffer.from(JSON.stringify({ user, expiresAt }), 'utf8').toString(
+    'base64url'
+  );
+  const sig = signPayload(payloadB64);
+  const token = `${payloadB64}.${sig}`;
 
-  db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now());
-  db.prepare(
-    'INSERT INTO sessions (token, user_json, expires_at) VALUES (?, ?, ?)'
-  ).run(token, JSON.stringify(user), expiresAt);
+  try {
+    db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now());
+    db.prepare(
+      'INSERT OR REPLACE INTO sessions (token, user_json, expires_at) VALUES (?, ?, ?)'
+    ).run(token, JSON.stringify(user), expiresAt);
+  } catch {
+    // Ignore SQLite write issue if stateless token is used
+  }
 
   res.cookie(COOKIE_NAME, token, {
     httpOnly: true,
@@ -37,6 +54,24 @@ export function getSessionUser(req: Request): SessionUser | null {
   const token = req.cookies?.[COOKIE_NAME];
   if (!token || typeof token !== 'string') return null;
 
+  // 1. Verify stateless HMAC token (works across all Vercel serverless instances)
+  if (token.includes('.')) {
+    const [payloadB64, sig] = token.split('.');
+    if (payloadB64 && sig && signPayload(payloadB64) === sig) {
+      try {
+        const decoded = JSON.parse(
+          Buffer.from(payloadB64, 'base64url').toString('utf8')
+        ) as { user: SessionUser; expiresAt: number };
+        if (decoded.expiresAt > Date.now() && decoded.user) {
+          return decoded.user;
+        }
+      } catch {
+        // Fall through to SQLite check
+      }
+    }
+  }
+
+  // 2. Fallback to SQLite session lookup
   const row = db
     .prepare('SELECT user_json, expires_at FROM sessions WHERE token = ?')
     .get(token) as { user_json: string; expires_at: number } | undefined;

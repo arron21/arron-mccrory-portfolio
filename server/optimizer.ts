@@ -221,44 +221,72 @@ export async function optimizeUploadedPhoto(
       .toFile(lightboxAvifPath),
   ]);
 
+  const isServerless = Boolean(process.env.VERCEL);
+
+  const getVariantUrl = async (filePath: string, publicPath: string, mime: string) => {
+    if (!isServerless) return publicPath;
+    try {
+      const buf = await fs.readFile(filePath);
+      return `data:${mime};base64,${buf.toString('base64')}`;
+    } catch {
+      return publicPath;
+    }
+  };
+
+  const [
+    thumbWebpUrl,
+    thumbAvifUrl,
+    galleryWebpUrl,
+    galleryAvifUrl,
+    lightboxWebpUrl,
+    lightboxAvifUrl,
+  ] = await Promise.all([
+    getVariantUrl(thumbWebpPath, `/uploads/thumb/${id}.webp`, 'image/webp'),
+    getVariantUrl(thumbAvifPath, `/uploads/thumb/${id}.avif`, 'image/avif'),
+    getVariantUrl(galleryWebpPath, `/uploads/gallery/${id}.webp`, 'image/webp'),
+    getVariantUrl(galleryAvifPath, `/uploads/gallery/${id}.avif`, 'image/avif'),
+    getVariantUrl(lightboxWebpPath, `/uploads/lightbox/${id}.webp`, 'image/webp'),
+    getVariantUrl(lightboxAvifPath, `/uploads/lightbox/${id}.avif`, 'image/avif'),
+  ]);
+
   const variants: PhotoVariants = {
     thumb_webp: {
-      url: `/uploads/thumb/${id}.webp`,
+      url: thumbWebpUrl,
       bytes: thumbWebpOut.size,
       width: thumbWebpOut.width,
       height: thumbWebpOut.height,
       format: 'webp',
     },
     thumb_avif: {
-      url: `/uploads/thumb/${id}.avif`,
+      url: thumbAvifUrl,
       bytes: thumbAvifOut.size,
       width: thumbAvifOut.width,
       height: thumbAvifOut.height,
       format: 'avif',
     },
     gallery_webp: {
-      url: `/uploads/gallery/${id}.webp`,
+      url: galleryWebpUrl,
       bytes: galleryWebpOut.size,
       width: galleryWebpOut.width,
       height: galleryWebpOut.height,
       format: 'webp',
     },
     gallery_avif: {
-      url: `/uploads/gallery/${id}.avif`,
+      url: galleryAvifUrl,
       bytes: galleryAvifOut.size,
       width: galleryAvifOut.width,
       height: galleryAvifOut.height,
       format: 'avif',
     },
     lightbox_webp: {
-      url: `/uploads/lightbox/${id}.webp`,
+      url: lightboxWebpUrl,
       bytes: lightboxWebpOut.size,
       width: lightboxWebpOut.width,
       height: lightboxWebpOut.height,
       format: 'webp',
     },
     lightbox_avif: {
-      url: `/uploads/lightbox/${id}.avif`,
+      url: lightboxAvifUrl,
       bytes: lightboxAvifOut.size,
       width: lightboxAvifOut.width,
       height: lightboxAvifOut.height,
