@@ -4,9 +4,18 @@ import multer from 'multer';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
-import { db, getSettings, updateSettings, UPLOADS_DIR, type SiteSettings } from './db.ts';
-import { optimizeUploadedPhoto, deletePhotoFiles } from './optimizer.ts';
-import { registerAuthRoutes, requireAdmin, getSessionUser } from './auth.ts';
+import { UPLOADS_DIR } from './db.ts';
+import { optimizeUploadedPhoto } from './optimizer.ts';
+import { registerAuthRoutes, getSessionUser } from './auth.ts';
+import { analyzeAndForgeCard } from './cardForge.ts';
+import {
+  getMmoState,
+  saveMmoState,
+  createNewMmoCardId,
+  type MmoCard,
+  type FactionId,
+  type FoilTier,
+} from './mmoState.ts';
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -26,8 +35,8 @@ app.use(
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 60 * 1024 * 1024, // 60 MB max per raw image
-    files: 25,
+    fileSize: 60 * 1024 * 1024,
+    files: 10,
   },
   fileFilter: (_req, file, cb) => {
     const allowed = [
@@ -46,304 +55,40 @@ const upload = multer({
   },
 });
 
-interface RawPhotoRow {
-  id: string;
-  title: string;
-  caption: string;
-  location: string;
-  collection_id: string | null;
-  tags: string;
-  is_featured: number;
-  is_public: number;
-  sort_order: number;
-  width: number;
-  height: number;
-  aspect_ratio: number;
-  dominant_color: string;
-  blur_data_url: string;
-  original_filename: string;
-  original_size_bytes: number;
-  optimized_size_bytes: number;
-  total_variants_bytes: number;
-  variants: string;
-  exif_camera: string;
-  exif_lens: string;
-  exif_focal_length: string;
-  exif_aperture: string;
-  exif_shutter_speed: string;
-  exif_iso: string;
-  exif_taken_at: string;
-  created_at: string;
-  updated_at: string;
-}
-
-function serializePhoto(row: RawPhotoRow) {
-  let tags: string[] = [];
-  let variants: Record<string, unknown> = {};
-  try {
-    tags = JSON.parse(row.tags);
-  } catch {
-    tags = [];
-  }
-  try {
-    variants = JSON.parse(row.variants);
-  } catch {
-    variants = {};
-  }
-
-  const savingsRatio =
-    row.original_size_bytes > 0
-      ? Math.max(0, 1 - row.optimized_size_bytes / row.original_size_bytes)
-      : 0;
-
-  return {
-    id: row.id,
-    title: row.title,
-    caption: row.caption,
-    location: row.location,
-    collectionId: row.collection_id,
-    tags,
-    isFeatured: Boolean(row.is_featured),
-    isPublic: Boolean(row.is_public),
-    sortOrder: row.sort_order,
-    width: row.width,
-    height: row.height,
-    aspectRatio: row.aspect_ratio,
-    dominantColor: row.dominant_color,
-    blurDataUrl: row.blur_data_url,
-    originalFilename: row.original_filename,
-    originalSizeBytes: row.original_size_bytes,
-    optimizedSizeBytes: row.optimized_size_bytes,
-    totalVariantsBytes: row.total_variants_bytes,
-    savingsPercent: Number((savingsRatio * 100).toFixed(1)),
-    variants,
-    exif: {
-      camera: row.exif_camera,
-      lens: row.exif_lens,
-      focalLength: row.exif_focal_length,
-      aperture: row.exif_aperture,
-      shutterSpeed: row.exif_shutter_speed,
-      iso: row.exif_iso,
-      takenAt: row.exif_taken_at,
-    },
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
 const api = express.Router();
 registerAuthRoutes(api);
 
-// Public Portfolio Data
-api.get('/portfolio', (req: Request, res: Response) => {
-  const settings = getSettings();
-  const isAdmin = Boolean(getSessionUser(req));
-
-  const rawPhotos = db
-    .prepare(
-      `SELECT * FROM photos
-       WHERE is_public = 1
-       ORDER BY sort_order ASC, created_at DESC`
-    )
-    .all() as unknown as RawPhotoRow[];
-
-  const photos = rawPhotos.map(serializePhoto);
-
-  const rawCollections = db
-    .prepare(
-      `SELECT * FROM collections
-       WHERE is_public = 1
-       ORDER BY sort_order ASC, created_at ASC`
-    )
-    .all() as Array<{
-    id: string;
-    slug: string;
-    title: string;
-    subtitle: string;
-    description: string;
-    cover_photo_id: string | null;
-    sort_order: number;
-    is_public: number;
-    created_at: string;
-  }>;
-
-  const collections = rawCollections.map((col) => {
-    const colPhotos = photos.filter((p) => p.collectionId === col.id);
-    const coverPhoto =
-      photos.find((p) => p.id === col.cover_photo_id) || colPhotos[0] || null;
-    return {
-      id: col.id,
-      slug: col.slug,
-      title: col.title,
-      subtitle: col.subtitle,
-      description: col.description,
-      coverPhotoId: col.cover_photo_id,
-      coverPhoto,
-      photoCount: colPhotos.length,
-      sortOrder: col.sort_order,
-      isPublic: Boolean(col.is_public),
-    };
-  });
-
-  const totalOriginalBytes = photos.reduce((acc, p) => acc + p.originalSizeBytes, 0);
-  const totalOptimizedBytes = photos.reduce((acc, p) => acc + p.optimizedSizeBytes, 0);
-  const averageSavingsPercent =
-    totalOriginalBytes > 0
-      ? Number(((1 - totalOptimizedBytes / totalOriginalBytes) * 100).toFixed(1))
-      : 0;
-
-  // Strip sensitive settings from public payload
-  const publicSettings = {
-    photographerName: settings.photographerName,
-    studioTitle: settings.studioTitle,
-    tagline: settings.tagline,
-    heroStatement: settings.heroStatement,
-    location: settings.location,
-    availabilityStatus: settings.availabilityStatus,
-    bioLead: settings.bioLead,
-    bioBody: settings.bioBody,
-    philosophyQuote: settings.philosophyQuote,
-    gearCameras: settings.gearCameras,
-    gearLenses: settings.gearLenses,
-    gearWorkflow: settings.gearWorkflow,
-    socialGithub: settings.socialGithub,
-    socialInstagram: settings.socialInstagram,
-    socialEmail: settings.socialEmail,
-  };
-
+// Get Full CHROMARIFT MMO State
+api.get('/mmo/state', (req: Request, res: Response) => {
+  const state = getMmoState();
+  const sessionUser = getSessionUser(req);
   res.json({
-    settings: publicSettings,
-    collections,
-    photos,
-    telemetry: {
-      totalPhotos: photos.length,
-      totalOriginalBytes,
-      totalOptimizedBytes,
-      averageSavingsPercent,
-    },
-    isAdmin,
+    ...state,
+    sessionUser,
   });
 });
 
-// Admin Studio Full Data
-api.get('/studio/data', requireAdmin, (_req: Request, res: Response) => {
-  const settings = getSettings();
-  const rawPhotos = db
-    .prepare('SELECT * FROM photos ORDER BY sort_order ASC, created_at DESC')
-    .all() as unknown as RawPhotoRow[];
-  const photos = rawPhotos.map(serializePhoto);
-
-  const rawCollections = db
-    .prepare('SELECT * FROM collections ORDER BY sort_order ASC, created_at ASC')
-    .all() as Array<{
-    id: string;
-    slug: string;
-    title: string;
-    subtitle: string;
-    description: string;
-    cover_photo_id: string | null;
-    sort_order: number;
-    is_public: number;
-    created_at: string;
-  }>;
-
-  const collections = rawCollections.map((col) => {
-    const colPhotos = photos.filter((p) => p.collectionId === col.id);
-    const coverPhoto =
-      photos.find((p) => p.id === col.cover_photo_id) || colPhotos[0] || null;
-    return {
-      id: col.id,
-      slug: col.slug,
-      title: col.title,
-      subtitle: col.subtitle,
-      description: col.description,
-      coverPhotoId: col.cover_photo_id,
-      coverPhoto,
-      photoCount: colPhotos.length,
-      sortOrder: col.sort_order,
-      isPublic: Boolean(col.is_public),
-    };
-  });
-
-  const inquiries = db
-    .prepare('SELECT * FROM inquiries ORDER BY created_at DESC')
-    .all() as Array<{
-    id: string;
-    name: string;
-    email: string;
-    project_type: string;
-    subject: string;
-    message: string;
-    is_read: number;
-    created_at: string;
-  }>;
-
-  const totalOriginalBytes = photos.reduce((acc, p) => acc + p.originalSizeBytes, 0);
-  const totalOptimizedBytes = photos.reduce((acc, p) => acc + p.optimizedSizeBytes, 0);
-  const totalDiskBytes = photos.reduce((acc, p) => acc + p.totalVariantsBytes, 0);
-
-  res.json({
-    settings,
-    collections,
-    photos,
-    inquiries: inquiries.map((inq) => ({
-      id: inq.id,
-      name: inq.name,
-      email: inq.email,
-      projectType: inq.project_type,
-      subject: inq.subject,
-      message: inq.message,
-      isRead: Boolean(inq.is_read),
-      createdAt: inq.created_at,
-    })),
-    telemetry: {
-      totalPhotos: photos.length,
-      totalOriginalBytes,
-      totalOptimizedBytes,
-      totalDiskBytes,
-      bytesSaved: Math.max(0, totalOriginalBytes - totalOptimizedBytes),
-      averageSavingsPercent:
-        totalOriginalBytes > 0
-          ? Number(((1 - totalOptimizedBytes / totalOriginalBytes) * 100).toFixed(1))
-          : 0,
-    },
-  });
-});
-
-// Batch Photo Upload & Web Optimization Endpoint
+// Forge Photo(s) into Collectible Combat Cards via Sharp + Exifr + Spectrum Alchemy
 api.post(
-  '/photos/upload',
-  requireAdmin,
-  upload.array('photos', 25),
+  '/mmo/forge',
+  upload.array('photos', 10),
   async (req: Request, res: Response) => {
     try {
       const files = req.files as Express.Multer.File[] | undefined;
       if (!files || files.length === 0) {
-        res.status(400).json({ error: 'No photo files received for optimization.' });
+        res.status(400).json({ error: 'No photo received for Soul-Lens Forging.' });
         return;
       }
 
-      const settings = getSettings();
-      const collectionId = (req.body.collectionId || '').trim() || null;
-      const isFeatured = req.body.isFeatured === 'true' || req.body.isFeatured === '1';
-      const isPublic = req.body.isPublic !== 'false' && req.body.isPublic !== '0';
-      const keepOriginals =
-        req.body.keepOriginals !== undefined
-          ? req.body.keepOriginals === 'true'
-          : settings.keepOriginals;
-      const location = (req.body.location || '').trim();
+      const state = getMmoState();
+      const player =
+        state.players.find((p) => p.id === 'player-arron21') || state.players[0];
 
-      let sharedTags: string[] = [];
-      if (req.body.tags) {
-        try {
-          sharedTags = JSON.parse(req.body.tags);
-        } catch {
-          sharedTags = String(req.body.tags)
-            .split(',')
-            .map((t) => t.trim())
-            .filter(Boolean);
-        }
-      }
+      const shareToFeed = req.body.shareToFeed !== 'false';
+      const equipSlot =
+        req.body.equipSlot !== undefined && req.body.equipSlot !== ''
+          ? Number(req.body.equipSlot)
+          : -1;
 
       let customTitles: Record<string, string> = {};
       if (req.body.titles) {
@@ -392,342 +137,375 @@ api.post(
         }
       }
 
-      const minOrderRow = db
-        .prepare('SELECT MIN(sort_order) as minOrder FROM photos')
-        .get() as { minOrder: number | null };
-      let nextOrder = (minOrderRow?.minOrder ?? 1) - files.length;
-
-      const insertStmt = db.prepare(`
-        INSERT INTO photos (
-          id, title, caption, location, collection_id, tags,
-          is_featured, is_public, sort_order,
-          width, height, aspect_ratio, dominant_color, blur_data_url,
-          original_filename, original_size_bytes, optimized_size_bytes, total_variants_bytes,
-          variants,
-          exif_camera, exif_lens, exif_focal_length, exif_aperture, exif_shutter_speed, exif_iso, exif_taken_at
-        ) VALUES (
-          ?, ?, ?, ?, ?, ?,
-          ?, ?, ?,
-          ?, ?, ?, ?, ?,
-          ?, ?, ?, ?,
-          ?,
-          ?, ?, ?, ?, ?, ?, ?
-        )
-      `);
-
-      const createdPhotos = [];
+      const forgedCards: MmoCard[] = [];
 
       for (const file of files) {
-        const id = crypto.randomUUID();
-        const opt = await optimizeUploadedPhoto(id, file.buffer, file.originalname, {
-          webpQuality: settings.webpQuality,
-          avifQuality: settings.avifQuality,
-          keepOriginals,
+        const cardId = createNewMmoCardId();
+        const opt = await optimizeUploadedPhoto(cardId, file.buffer, file.originalname, {
+          webpQuality: 82,
+          avifQuality: 68,
+          keepOriginals: false,
         });
+
+        const cExif = clientExifMap[file.originalname] || {};
+        const mergedExif = {
+          camera: opt.exif.camera || cExif.camera || 'Digital Medium Format',
+          lens: opt.exif.lens || cExif.lens || 'Prime Optical Glass',
+          focalLength: opt.exif.focalLength || cExif.focalLength || '35mm',
+          aperture: opt.exif.aperture || cExif.aperture || 'f/2.0',
+          shutterSpeed: opt.exif.shutterSpeed || cExif.shutterSpeed || '1/500s',
+          iso: opt.exif.iso || cExif.iso || 'ISO 400',
+          takenAt: opt.exif.takenAt || cExif.takenAt || '',
+        };
+
+        const forged = await analyzeAndForgeCard(
+          file.buffer,
+          mergedExif,
+          opt.width,
+          opt.height
+        );
+
+        const reportedOrigSize = Number(clientOriginalSizes[file.originalname] || 0);
+        const finalOrigBytes =
+          reportedOrigSize > opt.originalSizeBytes
+            ? reportedOrigSize
+            : opt.originalSizeBytes;
+        const savingsRatio =
+          finalOrigBytes > 0 ? Math.max(0, 1 - opt.optimizedSizeBytes / finalOrigBytes) : 0;
 
         const baseTitle = file.originalname
           .replace(/\.[^/.]+$/, '')
           .replace(/[-_]+/g, ' ')
           .replace(/\b\w/g, (l) => l.toUpperCase());
 
-        const title = (customTitles[file.originalname] || baseTitle || 'Untitled Plate').trim();
-        const caption = (customCaptions[file.originalname] || '').trim();
-        const sortOrder = nextOrder++;
+        const cardTitle = (
+          customTitles[file.originalname] ||
+          baseTitle ||
+          'Chromatic Relic'
+        ).trim();
+        const cardCaption = (
+          customCaptions[file.originalname] ||
+          `Forged from ${opt.width}×${opt.height} master frame (${mergedExif.focalLength} · ${mergedExif.aperture} · ${mergedExif.shutterSpeed}).`
+        ).trim();
 
-        const reportedOrigSize = Number(clientOriginalSizes[file.originalname] || 0);
-        const finalOriginalSizeBytes =
-          reportedOrigSize > opt.originalSizeBytes ? reportedOrigSize : opt.originalSizeBytes;
+        const newCard: MmoCard = {
+          id: cardId,
+          ownerId: player.id,
+          ownerName: player.displayName,
+          ownerHandle: player.username,
+          ownerFaction: player.faction,
+          title: cardTitle,
+          epithet: forged.epithet,
+          caption: cardCaption,
+          imageUrl: opt.variants.gallery_webp.url,
+          avifUrl: opt.variants.gallery_avif.url,
+          blurDataUrl: opt.blurDataUrl,
+          dominantColor: opt.dominantColor,
+          element: forged.element,
+          role: forged.role,
+          rarity: forged.rarity,
+          foil: forged.foil,
+          opticalTrait: forged.opticalTrait,
+          level: 1,
+          ascensionTier: 0,
+          hypeCount: 1,
+          hp: forged.hp,
+          atk: forged.atk,
+          def: forged.def,
+          spd: forged.spd,
+          crit: forged.crit,
+          powerRating: forged.powerRating,
+          ability: forged.ability,
+          exif: {
+            camera: mergedExif.camera,
+            lens: mergedExif.lens,
+            focalLength: mergedExif.focalLength,
+            aperture: mergedExif.aperture,
+            shutterSpeed: mergedExif.shutterSpeed,
+            iso: mergedExif.iso,
+          },
+          colorTelemetry: forged.colorTelemetry,
+          originalSizeBytes: finalOrigBytes,
+          optimizedSizeBytes: opt.optimizedSizeBytes,
+          savingsPercent: Number((savingsRatio * 100).toFixed(1)),
+          createdAt: 'Just now',
+        };
 
-        const cExif = clientExifMap[file.originalname] || {};
+        state.cards.unshift(newCard);
+        forgedCards.push(newCard);
 
-        insertStmt.run(
-          id,
-          title,
-          caption,
-          location,
-          collectionId,
-          JSON.stringify(sharedTags),
-          isFeatured ? 1 : 0,
-          isPublic ? 1 : 0,
-          sortOrder,
-          opt.width,
-          opt.height,
-          opt.aspectRatio,
-          opt.dominantColor,
-          opt.blurDataUrl,
-          file.originalname,
-          finalOriginalSizeBytes,
-          opt.optimizedSizeBytes,
-          opt.totalVariantsBytes,
-          JSON.stringify(opt.variants),
-          opt.exif.camera || cExif.camera || '',
-          opt.exif.lens || cExif.lens || '',
-          opt.exif.focalLength || cExif.focalLength || '',
-          opt.exif.aperture || cExif.aperture || '',
-          opt.exif.shutterSpeed || cExif.shutterSpeed || '',
-          opt.exif.iso || cExif.iso || '',
-          opt.exif.takenAt || cExif.takenAt || ''
-        );
+        if (equipSlot >= 0 && equipSlot < 4) {
+          player.squadCardIds[equipSlot] = newCard.id;
+        } else if (player.squadCardIds.length < 4) {
+          player.squadCardIds.push(newCard.id);
+        }
 
-        const insertedRow = db
-          .prepare('SELECT * FROM photos WHERE id = ?')
-          .get(id) as unknown as RawPhotoRow;
-        createdPhotos.push(serializePhoto(insertedRow));
+        if (shareToFeed) {
+          state.posts.unshift({
+            id: `post-${crypto.randomUUID().slice(0, 8)}`,
+            cardId: newCard.id,
+            authorId: player.id,
+            authorName: player.displayName,
+            authorHandle: player.username,
+            authorFaction: player.faction,
+            caption: cardCaption,
+            hypeCount: 1,
+            comments: [],
+            createdAt: 'Just now',
+          });
+        }
+
+        // Award forging currencies & XP
+        player.lumenDust += 120;
+        player.chromaticShards += 4;
+        player.xp += 85;
+        if (player.xp >= player.level * 200) {
+          player.level += 1;
+        }
       }
 
+      saveMmoState(state);
       res.status(201).json({
         ok: true,
-        count: createdPhotos.length,
-        photos: createdPhotos,
+        forgedCards,
+        state,
       });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to process and optimize photos';
+      const msg = err instanceof Error ? err.message : 'Failed to forge photo card';
       res.status(500).json({ error: msg });
     }
   }
 );
 
-// Update Photo Metadata & EXIF
-api.put('/photos/:id', requireAdmin, (req: Request, res: Response) => {
+// Hype / Boost a Social Feed Post (Directly buffs the Card's Combat Stats!)
+api.post('/mmo/posts/:id/hype', (req: Request, res: Response) => {
   const { id } = req.params;
-  const existing = db.prepare('SELECT * FROM photos WHERE id = ?').get(id) as
-    | RawPhotoRow
-    | undefined;
-  if (!existing) {
-    res.status(404).json({ error: 'Photo not found' });
+  const state = getMmoState();
+  const post = state.posts.find((p) => p.id === id);
+  if (!post) {
+    res.status(404).json({ error: 'Post not found' });
     return;
   }
 
-  const body = req.body || {};
-  const title = body.title !== undefined ? String(body.title).trim() : existing.title;
-  const caption = body.caption !== undefined ? String(body.caption).trim() : existing.caption;
-  const location = body.location !== undefined ? String(body.location).trim() : existing.location;
-  const collectionId =
-    body.collectionId !== undefined ? body.collectionId || null : existing.collection_id;
-  const tags =
-    body.tags !== undefined
-      ? JSON.stringify(
-          Array.isArray(body.tags)
-            ? body.tags
-            : String(body.tags)
-                .split(',')
-                .map((t: string) => t.trim())
-                .filter(Boolean)
-        )
-      : existing.tags;
-  const isFeatured =
-    body.isFeatured !== undefined ? (body.isFeatured ? 1 : 0) : existing.is_featured;
-  const isPublic = body.isPublic !== undefined ? (body.isPublic ? 1 : 0) : existing.is_public;
-  const sortOrder =
-    body.sortOrder !== undefined ? Number(body.sortOrder) : existing.sort_order;
+  post.hypeCount += 1;
+  const card = state.cards.find((c) => c.id === post.cardId);
+  if (card) {
+    card.hypeCount += 1;
+    // Every Hype stack buffs HP and ATK slightly
+    card.hp = Math.round(card.hp * 1.015);
+    card.atk = Math.round(card.atk * 1.015);
+    card.powerRating = Math.round(
+      card.hp * 0.25 + card.atk * 2.4 + card.def * 1.8 + card.spd * 1.6 + card.crit * 3.5
+    );
+  }
 
-  const exif = body.exif || {};
-  const exifCamera =
-    exif.camera !== undefined ? String(exif.camera).trim() : existing.exif_camera;
-  const exifLens = exif.lens !== undefined ? String(exif.lens).trim() : existing.exif_lens;
-  const exifFocalLength =
-    exif.focalLength !== undefined
-      ? String(exif.focalLength).trim()
-      : existing.exif_focal_length;
-  const exifAperture =
-    exif.aperture !== undefined ? String(exif.aperture).trim() : existing.exif_aperture;
-  const exifShutterSpeed =
-    exif.shutterSpeed !== undefined
-      ? String(exif.shutterSpeed).trim()
-      : existing.exif_shutter_speed;
-  const exifIso = exif.iso !== undefined ? String(exif.iso).trim() : existing.exif_iso;
-  const exifTakenAt =
-    exif.takenAt !== undefined ? String(exif.takenAt).trim() : existing.exif_taken_at;
+  const player = state.players.find((p) => p.id === 'player-arron21') || state.players[0];
+  player.lumenDust += 15;
 
-  db.prepare(
-    `UPDATE photos SET
-      title = ?, caption = ?, location = ?, collection_id = ?, tags = ?,
-      is_featured = ?, is_public = ?, sort_order = ?,
-      exif_camera = ?, exif_lens = ?, exif_focal_length = ?,
-      exif_aperture = ?, exif_shutter_speed = ?, exif_iso = ?, exif_taken_at = ?,
-      updated_at = datetime('now')
-     WHERE id = ?`
-  ).run(
-    title,
-    caption,
-    location,
-    collectionId,
-    tags,
-    isFeatured,
-    isPublic,
-    sortOrder,
-    exifCamera,
-    exifLens,
-    exifFocalLength,
-    exifAperture,
-    exifShutterSpeed,
-    exifIso,
-    exifTakenAt,
-    id
-  );
-
-  const updated = db
-    .prepare('SELECT * FROM photos WHERE id = ?')
-    .get(id) as unknown as RawPhotoRow;
-  res.json({ ok: true, photo: serializePhoto(updated) });
+  saveMmoState(state);
+  res.json({ ok: true, state });
 });
 
-// Reorder Photos
-api.post('/photos/reorder', requireAdmin, (req: Request, res: Response) => {
-  const { orderedIds } = (req.body || {}) as { orderedIds?: string[] };
-  if (!Array.isArray(orderedIds)) {
-    res.status(400).json({ error: 'orderedIds array is required' });
+// Comment on a Social Feed Post
+api.post('/mmo/posts/:id/comment', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { text } = (req.body || {}) as { text?: string };
+  if (!text || !text.trim()) {
+    res.status(400).json({ error: 'Comment text is required' });
     return;
   }
 
-  const updateOrder = db.prepare('UPDATE photos SET sort_order = ? WHERE id = ?');
-  orderedIds.forEach((id, index) => {
-    updateOrder.run(index + 1, id);
+  const state = getMmoState();
+  const post = state.posts.find((p) => p.id === id);
+  if (!post) {
+    res.status(404).json({ error: 'Post not found' });
+    return;
+  }
+
+  const player = state.players.find((p) => p.id === 'player-arron21') || state.players[0];
+  post.comments.push({
+    id: `c-${crypto.randomUUID().slice(0, 6)}`,
+    authorName: player.displayName,
+    authorHandle: player.username,
+    authorFaction: player.faction,
+    text: text.trim(),
+    createdAt: 'Just now',
   });
 
-  res.json({ ok: true });
+  saveMmoState(state);
+  res.json({ ok: true, state });
 });
 
-// Delete Photo
-api.delete('/photos/:id', requireAdmin, async (req: Request, res: Response) => {
-  const id = String(req.params.id);
-  const existing = db.prepare('SELECT * FROM photos WHERE id = ?').get(id) as
-    | RawPhotoRow
-    | undefined;
-  if (!existing) {
-    res.status(404).json({ error: 'Photo not found' });
+// Update Player Squad Formation or Faction Allegiance
+api.put('/mmo/player/squad', (req: Request, res: Response) => {
+  const { squadCardIds, faction, displayName } = (req.body || {}) as {
+    squadCardIds?: string[];
+    faction?: FactionId;
+    displayName?: string;
+  };
+
+  const state = getMmoState();
+  const player = state.players.find((p) => p.id === 'player-arron21') || state.players[0];
+
+  if (Array.isArray(squadCardIds) && squadCardIds.length > 0) {
+    player.squadCardIds = squadCardIds.slice(0, 4);
+  }
+  if (faction && ['Helios', 'Umbra', 'Prism'].includes(faction)) {
+    player.faction = faction;
+  }
+  if (displayName && displayName.trim()) {
+    player.displayName = displayName.trim();
+  }
+
+  saveMmoState(state);
+  res.json({ ok: true, state });
+});
+
+// Upgrade / Foil-Ascend / Fuse a Photo-Card in the Sanctum
+api.post('/mmo/cards/:id/upgrade', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { action, sacrificeCardId } = (req.body || {}) as {
+    action: 'levelup' | 'ascend' | 'fuse';
+    sacrificeCardId?: string;
+  };
+
+  const state = getMmoState();
+  const player = state.players.find((p) => p.id === 'player-arron21') || state.players[0];
+  const card = state.cards.find((c) => c.id === id);
+
+  if (!card) {
+    res.status(404).json({ error: 'Card not found' });
     return;
   }
 
-  db.prepare('DELETE FROM photos WHERE id = ?').run(id);
-  await deletePhotoFiles(id, existing.variants);
+  if (action === 'levelup') {
+    const cost = card.level * 100;
+    if (player.lumenDust < cost) {
+      res.status(400).json({ error: `Requires ${cost} Lumen Dust to level up.` });
+      return;
+    }
+    player.lumenDust -= cost;
+    card.level += 1;
+    card.hp = Math.round(card.hp * 1.1);
+    card.atk = Math.round(card.atk * 1.1);
+    card.def = Math.round(card.def * 1.08);
+    card.spd += 2;
+  } else if (action === 'ascend') {
+    const shardCost = 8;
+    if (player.chromaticShards < shardCost) {
+      res.status(400).json({ error: `Requires ${shardCost} Chromatic Shards to Foil-Ascend.` });
+      return;
+    }
+    const foilOrder: FoilTier[] = ['Standard', 'Holo', 'Prismatic', 'MythicRelic'];
+    const currentIdx = foilOrder.indexOf(card.foil);
+    const nextFoil = foilOrder[Math.min(foilOrder.length - 1, currentIdx + 1)];
+    player.chromaticShards -= shardCost;
+    card.foil = nextFoil;
+    card.ascensionTier += 1;
+    card.hp = Math.round(card.hp * 1.14);
+    card.atk = Math.round(card.atk * 1.14);
+    card.def = Math.round(card.def * 1.12);
+    card.crit = Math.min(65, card.crit + 4);
+  } else if (action === 'fuse') {
+    if (!sacrificeCardId || sacrificeCardId === card.id) {
+      res.status(400).json({ error: 'Select a different card to Soul-Fuse.' });
+      return;
+    }
+    const sacIdx = state.cards.findIndex((c) => c.id === sacrificeCardId);
+    if (sacIdx === -1) {
+      res.status(404).json({ error: 'Sacrifice card not found.' });
+      return;
+    }
+    const sacCard = state.cards[sacIdx];
+    card.secondaryTrait = sacCard.opticalTrait;
+    card.hp += Math.round(sacCard.hp * 0.18);
+    card.atk += Math.round(sacCard.atk * 0.18);
+    card.def += Math.round(sacCard.def * 0.18);
+    card.spd += Math.round(sacCard.spd * 0.08);
+    card.level += 1;
 
-  res.json({ ok: true });
-});
-
-// Collections CRUD
-api.post('/collections', requireAdmin, (req: Request, res: Response) => {
-  const { title, subtitle, description, isPublic } = req.body || {};
-  if (!title || !String(title).trim()) {
-    res.status(400).json({ error: 'Collection title is required' });
-    return;
+    // Remove sacrificed card from inventory & squad if present
+    state.cards.splice(sacIdx, 1);
+    player.squadCardIds = player.squadCardIds.filter((cid) => cid !== sacrificeCardId);
   }
 
-  const id = crypto.randomUUID();
-  const baseSlug = String(title)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
-  const slug = `${baseSlug || 'series'}-${id.slice(0, 4)}`;
-
-  const maxOrder = db
-    .prepare('SELECT MAX(sort_order) as maxOrder FROM collections')
-    .get() as { maxOrder: number | null };
-
-  db.prepare(
-    `INSERT INTO collections (id, slug, title, subtitle, description, sort_order, is_public)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    id,
-    slug,
-    String(title).trim(),
-    String(subtitle || '').trim(),
-    String(description || '').trim(),
-    (maxOrder?.maxOrder ?? 0) + 1,
-    isPublic === false ? 0 : 1
+  card.powerRating = Math.round(
+    card.hp * 0.25 + card.atk * 2.4 + card.def * 1.8 + card.spd * 1.6 + card.crit * 3.5
   );
 
-  res.status(201).json({ ok: true, id, slug });
+  saveMmoState(state);
+  res.json({ ok: true, card, state });
 });
 
-api.put('/collections/:id', requireAdmin, (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { title, subtitle, description, coverPhotoId, sortOrder, isPublic } = req.body || {};
+// Record Auto-Battle Outcome & Distribute MMO Rewards / Territory Control
+api.post('/mmo/battle/record', (req: Request, res: Response) => {
+  const { won, mode, zoneId, bossDamageDealt } = (req.body || {}) as {
+    won: boolean;
+    mode: 'pvp' | 'territory' | 'raid';
+    zoneId?: string;
+    bossDamageDealt?: number;
+  };
 
-  const existing = db.prepare('SELECT * FROM collections WHERE id = ?').get(id) as
-    | {
-        id: string;
-        title: string;
-        subtitle: string;
-        description: string;
-        cover_photo_id: string | null;
-        sort_order: number;
-        is_public: number;
+  const state = getMmoState();
+  const player = state.players.find((p) => p.id === 'player-arron21') || state.players[0];
+
+  if (mode === 'raid' && zoneId) {
+    const zone = state.zones.find((z) => z.id === zoneId);
+    if (zone) {
+      const dmg = Math.max(400, Number(bossDamageDealt || 1800));
+      zone.raidBoss.currentHp = Math.max(0, zone.raidBoss.currentHp - dmg);
+      if (zone.raidBoss.currentHp === 0) {
+        // Boss defeated! Reset for next tier and grant huge bonus
+        zone.raidBoss.maxHp = Math.round(zone.raidBoss.maxHp * 1.15);
+        zone.raidBoss.currentHp = zone.raidBoss.maxHp;
+        player.lumenDust += zone.raidBoss.rewardLumen * 2;
+        player.chromaticShards += zone.raidBoss.rewardShards * 2;
+      } else {
+        player.lumenDust += zone.raidBoss.rewardLumen;
+        player.chromaticShards += zone.raidBoss.rewardShards;
       }
-    | undefined;
+      player.xp += 140;
+      player.wins += 1;
+    }
+  } else if (won) {
+    player.wins += 1;
+    player.eloRating += 24;
+    player.lumenDust += mode === 'territory' ? 180 : 140;
+    player.chromaticShards += mode === 'territory' ? 5 : 3;
+    player.xp += 110;
 
-  if (!existing) {
-    res.status(404).json({ error: 'Collection not found' });
-    return;
+    if (zoneId) {
+      const zone = state.zones.find((z) => z.id === zoneId);
+      if (zone) {
+        const shift = 6;
+        if (player.faction === 'Helios') {
+          zone.heliosControl = Math.min(85, zone.heliosControl + shift);
+          zone.umbraControl = Math.max(5, zone.umbraControl - 3);
+          zone.prismControl = Math.max(5, 100 - zone.heliosControl - zone.umbraControl);
+        } else if (player.faction === 'Umbra') {
+          zone.umbraControl = Math.min(85, zone.umbraControl + shift);
+          zone.heliosControl = Math.max(5, zone.heliosControl - 3);
+          zone.prismControl = Math.max(5, 100 - zone.heliosControl - zone.umbraControl);
+        } else {
+          zone.prismControl = Math.min(85, zone.prismControl + shift);
+          zone.heliosControl = Math.max(5, zone.heliosControl - 3);
+          zone.umbraControl = Math.max(5, 100 - zone.heliosControl - zone.prismControl);
+        }
+      }
+    }
+  } else {
+    player.losses += 1;
+    player.eloRating = Math.max(800, player.eloRating - 12);
+    player.lumenDust += 45;
+    player.xp += 40;
   }
 
-  db.prepare(
-    `UPDATE collections SET
-      title = ?, subtitle = ?, description = ?, cover_photo_id = ?, sort_order = ?, is_public = ?,
-      updated_at = datetime('now')
-     WHERE id = ?`
-  ).run(
-    title !== undefined ? String(title).trim() : existing.title,
-    subtitle !== undefined ? String(subtitle).trim() : existing.subtitle,
-    description !== undefined ? String(description).trim() : existing.description,
-    coverPhotoId !== undefined ? coverPhotoId || null : existing.cover_photo_id,
-    sortOrder !== undefined ? Number(sortOrder) : existing.sort_order,
-    isPublic !== undefined ? (isPublic ? 1 : 0) : existing.is_public,
-    id
-  );
-
-  res.json({ ok: true });
-});
-
-api.delete('/collections/:id', requireAdmin, (req: Request, res: Response) => {
-  const { id } = req.params;
-  db.prepare('UPDATE photos SET collection_id = NULL WHERE collection_id = ?').run(id);
-  db.prepare('DELETE FROM collections WHERE id = ?').run(id);
-  res.json({ ok: true });
-});
-
-// Public Contact / Commission Inquiry Submission
-api.post('/inquiries', (req: Request, res: Response) => {
-  const { name, email, projectType, subject, message } = req.body || {};
-  if (!name || !email || !message) {
-    res.status(400).json({ error: 'Name, email, and message are required.' });
-    return;
+  if (player.xp >= player.level * 200) {
+    player.level += 1;
   }
 
-  const id = crypto.randomUUID();
-  db.prepare(
-    `INSERT INTO inquiries (id, name, email, project_type, subject, message)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(
-    id,
-    String(name).trim(),
-    String(email).trim(),
-    String(projectType || 'Editorial / Commission').trim(),
-    String(subject || '').trim(),
-    String(message).trim()
-  );
-
-  res.status(201).json({ ok: true, id });
-});
-
-api.put('/inquiries/:id/read', requireAdmin, (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { isRead } = req.body || {};
-  db.prepare('UPDATE inquiries SET is_read = ? WHERE id = ?').run(isRead ? 1 : 0, id);
-  res.json({ ok: true });
-});
-
-api.delete('/inquiries/:id', requireAdmin, (req: Request, res: Response) => {
-  const { id } = req.params;
-  db.prepare('DELETE FROM inquiries WHERE id = ?').run(id);
-  res.json({ ok: true });
-});
-
-// Update Site & Optimization Settings
-api.put('/settings', requireAdmin, (req: Request, res: Response) => {
-  const body = (req.body || {}) as Partial<SiteSettings>;
-  const updated = updateSettings(body);
-  res.json({ ok: true, settings: updated });
+  saveMmoState(state);
+  res.json({ ok: true, state });
 });
 
 app.use('/api', api);
@@ -753,7 +531,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Arron McCrory Photography Portfolio server running on http://localhost:${PORT}`);
+    console.log(`CHROMARIFT Photo-Combat MMO server running on http://localhost:${PORT}`);
   });
 }
 

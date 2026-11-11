@@ -1,20 +1,18 @@
-export interface VariantInfo {
-  url: string;
-  bytes: number;
-  width: number;
-  height: number;
-  format: 'webp' | 'avif' | 'original';
-}
+export type ElementType =
+  | 'Solar'
+  | 'Abyssal'
+  | 'Crimson'
+  | 'Verdant'
+  | 'Astral'
+  | 'Monochrome';
 
-export interface PhotoVariants {
-  thumb_webp?: VariantInfo;
-  thumb_avif?: VariantInfo;
-  gallery_webp?: VariantInfo;
-  gallery_avif?: VariantInfo;
-  lightbox_webp?: VariantInfo;
-  lightbox_avif?: VariantInfo;
-  original?: VariantInfo;
-}
+export type CardRole = 'Vanguard' | 'Bruiser' | 'Striker' | 'Arcanist';
+
+export type RarityTier = 'Common' | 'Rare' | 'Epic' | 'Legendary' | 'Mythic';
+
+export type FoilTier = 'Standard' | 'Holo' | 'Prismatic' | 'MythicRelic';
+
+export type FactionId = 'Helios' | 'Umbra' | 'Prism';
 
 export interface ExifData {
   camera: string;
@@ -23,121 +21,142 @@ export interface ExifData {
   aperture: string;
   shutterSpeed: string;
   iso: string;
-  takenAt: string;
+  takenAt?: string;
 }
 
-export interface Photo {
+export interface CardAbility {
+  name: string;
+  trigger: 'ON_ATTACK_2' | 'ON_BATTLE_START' | 'ON_CRIT' | 'ON_HURT';
+  triggerLabel: string;
+  description: string;
+  powerScale: number;
+  effectType:
+    | 'aoe_burn'
+    | 'armor_shred_heal'
+    | 'lifesteal_exec'
+    | 'team_heal_thorns'
+    | 'chain_crit'
+    | 'true_counter';
+}
+
+export interface MmoCard {
   id: string;
+  ownerId: string;
+  ownerName: string;
+  ownerHandle: string;
+  ownerFaction: FactionId;
   title: string;
+  epithet: string;
   caption: string;
-  location: string;
-  collectionId: string | null;
-  tags: string[];
-  isFeatured: boolean;
-  isPublic: boolean;
-  sortOrder: number;
-  width: number;
-  height: number;
-  aspectRatio: number;
+  imageUrl: string;
+  avifUrl?: string;
+  blurDataUrl?: string;
   dominantColor: string;
-  blurDataUrl: string;
-  originalFilename: string;
+  element: ElementType;
+  role: CardRole;
+  rarity: RarityTier;
+  foil: FoilTier;
+  opticalTrait: string;
+  secondaryTrait?: string;
+  level: number;
+  ascensionTier: number;
+  hypeCount: number;
+  hp: number;
+  atk: number;
+  def: number;
+  spd: number;
+  crit: number;
+  powerRating: number;
+  ability: CardAbility;
+  exif: ExifData;
+  colorTelemetry: {
+    r: number;
+    g: number;
+    b: number;
+    luminance: number;
+    contrast: number;
+    saturation: number;
+  };
   originalSizeBytes: number;
   optimizedSizeBytes: number;
-  totalVariantsBytes: number;
   savingsPercent: number;
-  variants: PhotoVariants;
-  exif: ExifData;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface Collection {
-  id: string;
-  slug: string;
-  title: string;
-  subtitle: string;
-  description: string;
-  coverPhotoId: string | null;
-  coverPhoto: Photo | null;
-  photoCount: number;
-  sortOrder: number;
-  isPublic: boolean;
-}
-
-export interface PublicSettings {
-  photographerName: string;
-  studioTitle: string;
-  tagline: string;
-  heroStatement: string;
-  location: string;
-  availabilityStatus: string;
-  bioLead: string;
-  bioBody: string;
-  philosophyQuote: string;
-  gearCameras: string[];
-  gearLenses: string[];
-  gearWorkflow: string[];
-  socialGithub: string;
-  socialInstagram: string;
-  socialEmail: string;
-}
-
-export interface FullSiteSettings extends PublicSettings {
-  allowedGithubUser: string;
-  allowedGoogleEmail: string;
-  webpQuality: number;
-  avifQuality: number;
-  keepOriginals: boolean;
-  fallbackPasscode: string;
-}
-
-export interface Inquiry {
-  id: string;
-  name: string;
-  email: string;
-  projectType: string;
-  subject: string;
-  message: string;
-  isRead: boolean;
   createdAt: string;
 }
 
-export interface Telemetry {
-  totalPhotos: number;
-  totalOriginalBytes: number;
-  totalOptimizedBytes: number;
-  totalDiskBytes?: number;
-  bytesSaved?: number;
-  averageSavingsPercent: number;
+export interface FeedComment {
+  id: string;
+  authorName: string;
+  authorHandle: string;
+  authorFaction: FactionId;
+  text: string;
+  createdAt: string;
 }
 
-export interface AuthUser {
+export interface MmoFeedPost {
   id: string;
-  name: string;
+  cardId: string;
+  authorId: string;
+  authorName: string;
+  authorHandle: string;
+  authorFaction: FactionId;
+  caption: string;
+  hypeCount: number;
+  comments: FeedComment[];
+  createdAt: string;
+}
+
+export interface MmoPlayer {
+  id: string;
   username: string;
-  email: string;
-  avatarUrl?: string;
-  provider: 'github' | 'google' | 'local-owner';
+  displayName: string;
+  faction: FactionId;
+  title: string;
+  level: number;
+  xp: number;
+  lumenDust: number;
+  chromaticShards: number;
+  eloRating: number;
+  wins: number;
+  losses: number;
+  squadCardIds: string[];
+  isNpc: boolean;
 }
 
-export interface AuthStatus {
-  authenticated: boolean;
-  user: AuthUser | null;
-  providers: {
-    github: {
-      configured: boolean;
-      allowedUser: string;
-    };
-    google: {
-      configured: boolean;
-      allowedEmail: string;
-    };
-    devFallback: {
-      enabled: boolean;
-      passcodeRequired: boolean;
-    };
+export interface MmoWorldZone {
+  id: string;
+  name: string;
+  subtitle: string;
+  element: ElementType;
+  description: string;
+  bannerUrl: string;
+  heliosControl: number;
+  umbraControl: number;
+  prismControl: number;
+  guardianPlayerId: string;
+  raidBoss: {
+    id: string;
+    name: string;
+    epithet: string;
+    element: ElementType;
+    imageUrl: string;
+    maxHp: number;
+    currentHp: number;
+    atk: number;
+    def: number;
+    spd: number;
+    crit: number;
+    abilityName: string;
+    abilityDesc: string;
+    rewardLumen: number;
+    rewardShards: number;
   };
+}
+
+export interface MmoState {
+  players: MmoPlayer[];
+  cards: MmoCard[];
+  posts: MmoFeedPost[];
+  zones: MmoWorldZone[];
 }
 
 export function formatBytes(bytes: number): string {
@@ -150,15 +169,4 @@ export function formatBytes(bytes: number): string {
     idx++;
   }
   return `${val.toFixed(idx === 0 ? 0 : val >= 100 ? 0 : 1)} ${units[idx]}`;
-}
-
-export function formatExifSummary(exif: ExifData): string {
-  const parts = [
-    exif.camera,
-    exif.focalLength,
-    exif.aperture,
-    exif.shutterSpeed,
-    exif.iso,
-  ].filter(Boolean);
-  return parts.join(' · ');
 }
