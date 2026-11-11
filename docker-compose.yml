@@ -1,0 +1,18 @@
+services:
+  portfolio:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - ALLOWED_GITHUB_USER=${ALLOWED_GITHUB_USER:-arron21}
+      - ALLOWED_GOOGLE_EMAIL=${ALLOWED_GOOGLE_EMAIL:-2738674+arron21@users.noreply.github.com}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - ADMIN_PASSCODE=${ADMIN_PASSCODE:-}
+    restart: unless-stopped

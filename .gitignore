@@ -1,0 +1,44 @@
+# Home directory dotfiles & caches
+.npm/
+.cache/
+.local/
+.config/
+.gemini
+.bashrc
+.bash_logout
+.profile
+.gitconfig
+.lesshst
+.viminfo
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+.env
+
+# Local SQLite & Uploaded Derivatives
+data/
+
+# Vercel
+.vercel
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
