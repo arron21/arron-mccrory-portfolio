@@ -28,6 +28,7 @@ import {
   type Telemetry,
   type AuthUser,
 } from '../types.ts';
+import { preparePhotoForUpload } from '../utils/clientOptimizer.ts';
 
 interface StudioDashboardProps {
   user: AuthUser | null;
@@ -71,6 +72,7 @@ export const StudioDashboard: React.FC<StudioDashboardProps> = ({
   const [uploadFeatured, setUploadFeatured] = useState(true);
   const [uploadKeepOriginals, setUploadKeepOriginals] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgressText, setUploadProgressText] = useState<string>('');
   const [lastOptimizedBatch, setLastOptimizedBatch] = useState<Photo[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -206,47 +208,76 @@ export const StudioDashboard: React.FC<StudioDashboardProps> = ({
     setUploading(true);
     setLastOptimizedBatch([]);
 
+    const uploadedPhotos: Photo[] = [];
+
     try {
-      const formData = new FormData();
-      const titlesMap: Record<string, string> = {};
-      const captionsMap: Record<string, string> = {};
-
-      for (const item of stagedFiles) {
-        formData.append('photos', item.file);
-        titlesMap[item.file.name] = item.title;
-        captionsMap[item.file.name] = item.caption;
-      }
-
-      if (uploadCollectionId) formData.append('collectionId', uploadCollectionId);
-      if (uploadLocation) formData.append('location', uploadLocation);
-      if (uploadTags) formData.append('tags', uploadTags);
-      formData.append('isFeatured', String(uploadFeatured));
-      formData.append('keepOriginals', String(uploadKeepOriginals));
-      formData.append('titles', JSON.stringify(titlesMap));
-      formData.append('captions', JSON.stringify(captionsMap));
-
-      const res = await fetch('/api/photos/upload', {
-        method: 'POST',
-        body: formData,
-      });
-      const data = await res.json();
-
-      if (!res.ok) {
-        showToast(data.error || 'Upload failed');
-      } else {
-        stagedFiles.forEach((s) => URL.revokeObjectURL(s.previewUrl));
-        setStagedFiles([]);
-        setLastOptimizedBatch(data.photos || []);
-        await fetchStudioData();
-        onRefreshPublic();
-        showToast(
-          `Optimized & published ${data.count} plate${data.count === 1 ? '' : 's'} in AVIF & WebP.`
+      for (let i = 0; i < stagedFiles.length; i++) {
+        const item = stagedFiles[i];
+        setUploadProgressText(
+          `Pre-optimizing & uploading plate ${i + 1} of ${stagedFiles.length} (${item.title})...`
         );
+
+        const prepared = await preparePhotoForUpload(item.file);
+        const targetFilename = prepared.uploadFile.name;
+
+        const formData = new FormData();
+        formData.append('photos', prepared.uploadFile);
+
+        if (uploadCollectionId) formData.append('collectionId', uploadCollectionId);
+        if (uploadLocation) formData.append('location', uploadLocation);
+        if (uploadTags) formData.append('tags', uploadTags);
+        formData.append('isFeatured', String(uploadFeatured));
+        formData.append('keepOriginals', String(uploadKeepOriginals));
+        formData.append('titles', JSON.stringify({ [targetFilename]: item.title }));
+        formData.append('captions', JSON.stringify({ [targetFilename]: item.caption }));
+        formData.append(
+          'clientOriginalSizes',
+          JSON.stringify({ [targetFilename]: prepared.originalSizeBytes })
+        );
+        formData.append(
+          'clientExif',
+          JSON.stringify({ [targetFilename]: prepared.exif })
+        );
+
+        const res = await fetch('/api/photos/upload', {
+          method: 'POST',
+          body: formData,
+        });
+
+        let data: { error?: string; photos?: Photo[] } = {};
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          data = await res.json();
+        } else {
+          const text = await res.text();
+          data = { error: text.slice(0, 160) || `Upload failed (${res.status})` };
+        }
+
+        if (!res.ok) {
+          showToast(data.error || `Upload failed on plate ${i + 1}`);
+          return;
+        }
+
+        if (data.photos && data.photos.length > 0) {
+          uploadedPhotos.push(...data.photos);
+        }
       }
+
+      stagedFiles.forEach((s) => URL.revokeObjectURL(s.previewUrl));
+      setStagedFiles([]);
+      setLastOptimizedBatch(uploadedPhotos);
+      await fetchStudioData();
+      onRefreshPublic();
+      showToast(
+        `Optimized & published ${uploadedPhotos.length} plate${
+          uploadedPhotos.length === 1 ? '' : 's'
+        } in AVIF & WebP.`
+      );
     } catch {
       showToast('Network error while uploading photos.');
     } finally {
       setUploading(false);
+      setUploadProgressText('');
     }
   };
 
@@ -865,7 +896,8 @@ export const StudioDashboard: React.FC<StudioDashboardProps> = ({
                   >
                     <Sparkles size={16} />
                     {uploading
-                      ? 'Running Sharp Multi-Tier AVIF + WebP Optimization Pipeline...'
+                      ? uploadProgressText ||
+                        'Running Sharp Multi-Tier AVIF + WebP Optimization Pipeline...'
                       : `Optimize & Publish ${stagedFiles.length} Plate${
                           stagedFiles.length === 1 ? '' : 's'
                         }`}

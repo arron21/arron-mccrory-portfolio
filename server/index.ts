@@ -363,6 +363,35 @@ api.post(
         }
       }
 
+      let clientOriginalSizes: Record<string, number> = {};
+      if (req.body.clientOriginalSizes) {
+        try {
+          clientOriginalSizes = JSON.parse(req.body.clientOriginalSizes);
+        } catch {
+          clientOriginalSizes = {};
+        }
+      }
+
+      let clientExifMap: Record<
+        string,
+        Partial<{
+          camera: string;
+          lens: string;
+          focalLength: string;
+          aperture: string;
+          shutterSpeed: string;
+          iso: string;
+          takenAt: string;
+        }>
+      > = {};
+      if (req.body.clientExif) {
+        try {
+          clientExifMap = JSON.parse(req.body.clientExif);
+        } catch {
+          clientExifMap = {};
+        }
+      }
+
       const minOrderRow = db
         .prepare('SELECT MIN(sort_order) as minOrder FROM photos')
         .get() as { minOrder: number | null };
@@ -405,6 +434,12 @@ api.post(
         const caption = (customCaptions[file.originalname] || '').trim();
         const sortOrder = nextOrder++;
 
+        const reportedOrigSize = Number(clientOriginalSizes[file.originalname] || 0);
+        const finalOriginalSizeBytes =
+          reportedOrigSize > opt.originalSizeBytes ? reportedOrigSize : opt.originalSizeBytes;
+
+        const cExif = clientExifMap[file.originalname] || {};
+
         insertStmt.run(
           id,
           title,
@@ -421,17 +456,17 @@ api.post(
           opt.dominantColor,
           opt.blurDataUrl,
           file.originalname,
-          opt.originalSizeBytes,
+          finalOriginalSizeBytes,
           opt.optimizedSizeBytes,
           opt.totalVariantsBytes,
           JSON.stringify(opt.variants),
-          opt.exif.camera,
-          opt.exif.lens,
-          opt.exif.focalLength,
-          opt.exif.aperture,
-          opt.exif.shutterSpeed,
-          opt.exif.iso,
-          opt.exif.takenAt
+          opt.exif.camera || cExif.camera || '',
+          opt.exif.lens || cExif.lens || '',
+          opt.exif.focalLength || cExif.focalLength || '',
+          opt.exif.aperture || cExif.aperture || '',
+          opt.exif.shutterSpeed || cExif.shutterSpeed || '',
+          opt.exif.iso || cExif.iso || '',
+          opt.exif.takenAt || cExif.takenAt || ''
         );
 
         const insertedRow = db
