@@ -227,6 +227,14 @@ api.post(
           categoryConfidence: forged.categoryConfidence,
           categoryBonusLabel: forged.categoryBonusLabel,
           categoryReason: forged.categoryReason,
+          vibeCounts: {
+            cool: 0,
+            cute: 0,
+            scary: 0,
+            funny: 0,
+            chill: 0,
+            epic: 0,
+          },
           role: forged.role,
           rarity: forged.rarity,
           foil: forged.foil,
@@ -336,6 +344,126 @@ api.post('/mmo/cards/:id/release-wild', (req: Request, res: Response) => {
 
   saveMmoState(state);
   res.json({ ok: true, card, state });
+});
+
+// Judge a Photo Card with a Vibe Reaction (Cool, Cute, Scary, Funny, Chill, Epic) -> Saves Click & Directly Modifies Card Stats!
+api.post('/mmo/cards/:id/judge', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { vibe } = (req.body || {}) as {
+    vibe?: 'cool' | 'cute' | 'scary' | 'funny' | 'chill' | 'epic';
+  };
+
+  const validVibes = ['cool', 'cute', 'scary', 'funny', 'chill', 'epic'] as const;
+  if (!vibe || !validVibes.includes(vibe)) {
+    res.status(400).json({ error: 'Invalid photo judgment vibe.' });
+    return;
+  }
+
+  const state = getMmoState();
+  const card = state.cards.find((c) => c.id === id);
+  if (!card) {
+    res.status(404).json({ error: 'Photo card not found.' });
+    return;
+  }
+
+  if (!card.vibeCounts) {
+    card.vibeCounts = {
+      cool: 0,
+      cute: 0,
+      scary: 0,
+      funny: 0,
+      chill: 0,
+      epic: 0,
+    };
+  }
+
+  card.vibeCounts[vibe] = (card.vibeCounts[vibe] || 0) + 1;
+  card.hypeCount = (card.hypeCount || 0) + 1;
+
+  // Apply Vibe-Specific Stat Boosts!
+  let statDeltaLabel = '';
+  switch (vibe) {
+    case 'cool':
+      card.spd += 4;
+      card.atk += 10;
+      statDeltaLabel = '😎 Cool! +4 SPD · +10 ATK';
+      break;
+    case 'cute':
+      card.hp += 55;
+      card.def += 12;
+      statDeltaLabel = '🥺 Cute! +55 HP · +12 DEF';
+      break;
+    case 'scary':
+      card.atk += 22;
+      card.hp += 20;
+      statDeltaLabel = '💀 Scary! +22 ATK · +20 HP';
+      break;
+    case 'funny': {
+      const prevCrit = card.crit;
+      card.crit = Math.min(85, card.crit + 3);
+      const critGain = card.crit - prevCrit;
+      if (critGain > 0) {
+        card.atk += 8;
+        statDeltaLabel = `😂 Funny! +${critGain}% CRIT · +8 ATK`;
+      } else {
+        card.atk += 20;
+        statDeltaLabel = '😂 Funny! (MAX CRIT) +20 ATK';
+      }
+      break;
+    }
+    case 'chill':
+      card.def += 18;
+      card.hp += 40;
+      statDeltaLabel = '🌊 Chill! +18 DEF · +40 HP';
+      break;
+    case 'epic':
+      card.atk += 12;
+      card.def += 8;
+      card.spd += 2;
+      card.crit = Math.min(85, card.crit + 1);
+      statDeltaLabel = '🔥 Epic! +12 ATK · +8 DEF · +2 SPD · +1% CRIT';
+      break;
+  }
+
+  // Recompute Dominant Vibe
+  let topVibe: typeof vibe = vibe;
+  let topCount = -1;
+  for (const v of validVibes) {
+    const cnt = card.vibeCounts[v] || 0;
+    if (cnt > topCount) {
+      topCount = cnt;
+      topVibe = v;
+    }
+  }
+  card.dominantVibe = topVibe;
+
+  // Recalculate Power Rating
+  card.powerRating = Math.round(
+    card.hp * 0.25 + card.atk * 2.4 + card.def * 1.8 + card.spd * 1.6 + card.crit * 3.5
+  );
+
+  // Sync linked feed post hype count if present
+  const linkedPost = state.posts.find((p) => p.cardId === card.id);
+  if (linkedPost) {
+    linkedPost.hypeCount += 1;
+  }
+
+  // Reward judging player
+  const player = state.players.find((p) => p.id === 'player-arron21') || state.players[0];
+  player.lumenDust += 10;
+  player.xp += 15;
+  if (player.xp >= player.level * 200) {
+    player.level += 1;
+  }
+
+  saveMmoState(state);
+  res.json({
+    ok: true,
+    vibe,
+    statDeltaLabel,
+    card,
+    state,
+  });
 });
 
 // Hype / Boost a Social Feed Post (Directly buffs the Card's Combat Stats!)

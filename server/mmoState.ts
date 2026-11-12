@@ -11,6 +11,10 @@ import type {
 
 export type FactionId = 'Helios' | 'Umbra' | 'Prism';
 
+export type VibeType = 'cool' | 'cute' | 'scary' | 'funny' | 'chill' | 'epic';
+
+export type VibeCounts = Record<VibeType, number>;
+
 export interface MmoCard {
   id: string;
   ownerId: string;
@@ -32,6 +36,8 @@ export interface MmoCard {
   categoryConfidence?: number;
   categoryBonusLabel?: string;
   categoryReason?: string;
+  vibeCounts?: VibeCounts;
+  dominantVibe?: VibeType;
   role: CardRole;
   rarity: RarityTier;
   foil: FoilTier;

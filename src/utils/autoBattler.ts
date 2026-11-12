@@ -158,7 +158,7 @@ export function evaluateSquadSynergies(cards: MmoCard[]): SynergyBonus[] {
     });
   }
 
-  // Optical trait synergy
+  // Optical trait & Vibe Judgment synergy
   const totalHype = cards.reduce((sum, c) => sum + (c.hypeCount || 0), 0);
   if (totalHype >= 10) {
     const hypeBoost = Math.min(30, Math.round(totalHype * 0.8));
@@ -167,6 +167,32 @@ export function evaluateSquadSynergies(cards: MmoCard[]): SynergyBonus[] {
       name: `Chromastream Hype (${totalHype} ⚡)`,
       description: `+${hypeBoost}% Squad HP & ATK from Social Feed Hype`,
       tier: 'chromatic',
+    });
+  }
+
+  const totalFunny = cards.reduce((sum, c) => sum + (c.vibeCounts?.funny || 0), 0);
+  if (totalFunny >= 3) {
+    bonuses.push({
+      id: 'syn-vibe-funny',
+      name: `Comedy Gold (${totalFunny} 😂 Funny)`,
+      description: `+${Math.min(18, totalFunny * 2)}% Squad Crit Chance from Funny judgments`,
+      tier: 'gold',
+    });
+  }
+
+  const totalVibeClicks = cards.reduce((sum, c) => {
+    if (!c.vibeCounts) return sum;
+    return (
+      sum +
+      Object.values(c.vibeCounts).reduce((acc, v) => acc + (v || 0), 0)
+    );
+  }, 0);
+  if (totalVibeClicks >= 5) {
+    bonuses.push({
+      id: 'syn-vibe-acclaim',
+      name: `Crowd Verdict (${totalVibeClicks} Judgments)`,
+      description: '+8% All Stats from Community Photo Judgments',
+      tier: 'silver',
     });
   }
 
@@ -184,6 +210,9 @@ function buildCombatUnits(
 ): CombatUnitState[] {
   const hasPrismatic = synergies.some((s) => s.id === 'syn-prismatic-quartet');
   const hasCurator = synergies.some((s) => s.id === 'syn-curator-exhibition');
+  const hasCrowdVerdict = synergies.some((s) => s.id === 'syn-vibe-acclaim');
+  const totalFunny = cards.reduce((sum, c) => sum + (c.vibeCounts?.funny || 0), 0);
+  const funnySynCrit = totalFunny >= 3 ? Math.min(18, totalFunny * 2) : 0;
   const totalHype = cards.reduce((sum, c) => sum + (c.hypeCount || 0), 0);
   const hypeMult = 1 + Math.min(0.3, totalHype * 0.004);
 
@@ -194,11 +223,12 @@ function buildCombatUnits(
       ? synergies.some((s) => s.id === `syn-cat-${card.category}`)
       : false;
 
-    let hpMult = hypeMult * (hasPrismatic ? 1.18 : 1) * (hasCurator ? 1.1 : 1);
-    let atkMult = hypeMult * (hasPrismatic ? 1.18 : 1) * (hasCurator ? 1.1 : 1);
-    let defMult = hasCurator ? 1.1 : 1;
-    let spdBonus = (hasPrismatic ? 8 : 0) + (hasCurator ? 6 : 0);
-    let critBonus = (hasPrismatic ? 12 : 0) + (hasCurator ? 5 : 0);
+    const crowdMult = hasCrowdVerdict ? 1.08 : 1;
+    let hpMult = hypeMult * (hasPrismatic ? 1.18 : 1) * (hasCurator ? 1.1 : 1) * crowdMult;
+    let atkMult = hypeMult * (hasPrismatic ? 1.18 : 1) * (hasCurator ? 1.1 : 1) * crowdMult;
+    let defMult = (hasCurator ? 1.1 : 1) * crowdMult;
+    let spdBonus = (hasPrismatic ? 8 : 0) + (hasCurator ? 6 : 0) + (hasCrowdVerdict ? 4 : 0);
+    let critBonus = (hasPrismatic ? 12 : 0) + (hasCurator ? 5 : 0) + funnySynCrit;
 
     if (elemTriad) {
       hpMult *= 1.25;
@@ -229,7 +259,9 @@ function buildCombatUnits(
     }
 
     const maxHp = Math.round(card.hp * hpMult);
-    const startingShield =
+    const cuteClicks = card.vibeCounts?.cute || 0;
+    const cuteShieldBonus = Math.round(maxHp * Math.min(0.18, cuteClicks * 0.03));
+    const baseShield =
       idx === 0 && (card.role === 'Vanguard' || card.role === 'Bruiser')
         ? Math.round(maxHp * 0.22)
         : card.category === 'Architecture'
@@ -237,6 +269,7 @@ function buildCombatUnits(
         : card.opticalTrait === 'Long-Exposure Bastion'
         ? Math.round(maxHp * 0.15)
         : 0;
+    const startingShield = baseShield + cuteShieldBonus;
 
     return {
       instanceId: `${side}-${idx}-${card.id}`,

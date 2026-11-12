@@ -13,12 +13,20 @@ import {
   ChevronUp,
   Tag,
 } from 'lucide-react';
-import { formatBytes, type MmoCard, type ElementType, type PhotoCategory } from '../types.ts';
+import {
+  formatBytes,
+  VIBE_DEFINITIONS,
+  type MmoCard,
+  type ElementType,
+  type PhotoCategory,
+  type VibeType,
+} from '../types.ts';
 
 interface CombatCardViewProps {
   card: MmoCard;
   compact?: boolean;
   slotBadge?: string;
+  onJudgeVibe?: (cardId: string, vibe: VibeType) => Promise<void> | void;
   footerActions?: React.ReactNode;
 }
 
@@ -63,12 +71,38 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
   card,
   compact = false,
   slotBadge,
+  onJudgeVibe,
   footerActions,
 }) => {
   const [showTelemetry, setShowTelemetry] = useState(false);
+  const [lastClickedVibe, setLastClickedVibe] = useState<string | null>(null);
   const elemColor = ELEMENT_COLORS[card.element] || 'var(--gold-primary)';
   const category = card.category || 'Still Life';
   const catEmoji = CATEGORY_ICONS[category] || '📷';
+
+  const vibeCounts = card.vibeCounts || {
+    cool: 0,
+    cute: 0,
+    scary: 0,
+    funny: 0,
+    chill: 0,
+    epic: 0,
+  };
+
+  const totalJudgments = Object.values(vibeCounts).reduce((sum, n) => sum + (n || 0), 0);
+  const dominantVibeDef = card.dominantVibe
+    ? VIBE_DEFINITIONS.find((v) => v.id === card.dominantVibe)
+    : undefined;
+
+  const handleVibeClick = (vibe: VibeType, description: string) => {
+    setLastClickedVibe(description);
+    if (onJudgeVibe) {
+      onJudgeVibe(card.id, vibe);
+    }
+    window.setTimeout(() => {
+      setLastClickedVibe((prev) => (prev === description ? null : prev));
+    }, 1800);
+  };
 
   return (
     <article className={`combat-card foil-${card.foil}`}>
@@ -103,6 +137,9 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
           <div className="card-title-group" style={{ minWidth: 0 }}>
             <div className="card-epithet">
               {catEmoji} {category} · {card.role}
+              {dominantVibeDef && totalJudgments > 0
+                ? ` · ${dominantVibeDef.emoji} ${dominantVibeDef.label}`
+                : ''}
             </div>
             <h3
               style={{
@@ -196,6 +233,125 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
             </span>
           </div>
         </div>
+
+        {/* =========================================================
+            PHOTO VIBE JUDGMENT BAR (Cool, Cute, Scary, Funny, Chill, Epic)
+            Saves clicks on the photo & directly boosts its combat stats!
+           ========================================================= */}
+        {onJudgeVibe && (
+          <div
+            style={{
+              background: 'var(--bg-surface)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-sm)',
+              padding: '0.45rem 0.5rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.35rem',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '0.6rem',
+                color: 'var(--text-secondary)',
+              }}
+            >
+              <span>
+                JUDGE PHOTO VIBE{' '}
+                {totalJudgments > 0 ? `(${totalJudgments} saved)` : '(Tap to buff stats!)'}
+              </span>
+              {lastClickedVibe ? (
+                <span style={{ color: '#4ade80', fontWeight: 700 }}>{lastClickedVibe}</span>
+              ) : dominantVibeDef && totalJudgments > 0 ? (
+                <span style={{ color: dominantVibeDef.color, fontWeight: 700 }}>
+                  {dominantVibeDef.emoji} {dominantVibeDef.label} Aura ({dominantVibeDef.shortStat})
+                </span>
+              ) : (
+                <span style={{ color: 'var(--gold-primary)' }}>😂 Funny = +3% CRIT</span>
+              )}
+            </div>
+
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(3, 1fr)',
+                gap: '0.3rem',
+              }}
+            >
+              {VIBE_DEFINITIONS.map((vibe) => {
+                const count = vibeCounts[vibe.id] || 0;
+                const isDominant = totalJudgments > 0 && card.dominantVibe === vibe.id;
+                return (
+                  <button
+                    key={vibe.id}
+                    type="button"
+                    className="btn btn-surface"
+                    onClick={() =>
+                      handleVibeClick(vibe.id, `${vibe.emoji} ${vibe.description}`)
+                    }
+                    title={`Judge ${vibe.label}: ${vibe.description}`}
+                    style={{
+                      minHeight: '36px',
+                      padding: '0.25rem 0.35rem',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '0.06rem',
+                      borderColor: isDominant
+                        ? vibe.color
+                        : count > 0
+                        ? 'var(--border-gold)'
+                        : undefined,
+                      background: isDominant ? 'hsla(38, 62%, 60%, 0.12)' : undefined,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.25rem',
+                        fontSize: '0.7rem',
+                        fontWeight: 700,
+                        color: count > 0 ? vibe.color : 'var(--text-primary)',
+                      }}
+                    >
+                      <span>{vibe.emoji}</span>
+                      <span>{vibe.label}</span>
+                      {count > 0 && (
+                        <span
+                          style={{
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: '0.62rem',
+                            background: 'var(--bg-void)',
+                            padding: '0.02rem 0.28rem',
+                            borderRadius: '999px',
+                            color: vibe.color,
+                          }}
+                        >
+                          {count}
+                        </span>
+                      )}
+                    </div>
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '0.53rem',
+                        color: 'var(--text-muted)',
+                      }}
+                    >
+                      {vibe.shortStat}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         <div
           style={{

@@ -24,12 +24,14 @@ import {
 } from 'lucide-react';
 import {
   formatBytes,
+  VIBE_DEFINITIONS,
   type MmoState,
   type MmoCard,
   type MmoPlayer,
   type FactionId,
   type ElementType,
   type PhotoCategory,
+  type VibeType,
 } from './types.ts';
 import { CombatCardView } from './components/CombatCardView.tsx';
 import { AutoBattleArenaModal } from './components/AutoBattleArenaModal.tsx';
@@ -318,6 +320,33 @@ export function App() {
       const data = await res.json();
       if (data.state) syncState(data.state);
       showToast('⚡ Hype Resonance! Card HP & ATK permanently buffed (+15 Lumen).');
+    }
+  };
+
+  // Judge a Photo Card with a Vibe Reaction (Cool, Cute, Scary, Funny, Chill, Epic)
+  const handleJudgePhotoVibe = async (cardId: string, vibe: VibeType) => {
+    try {
+      const res = await fetch(`/api/mmo/cards/${cardId}/judge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vibe }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.state) {
+          syncState(data.state);
+        }
+        if (data.card) {
+          setLastForgedCards((prev) =>
+            prev.map((c) => (c.id === cardId ? data.card : c))
+          );
+        }
+        if (data.statDeltaLabel) {
+          showToast(`${data.statDeltaLabel} (+10 Lumen Dust)`);
+        }
+      }
+    } catch {
+      showToast('Could not save photo vibe judgment.');
     }
   };
 
@@ -1128,7 +1157,11 @@ export function App() {
                       </p>
 
                       {/* Collectible Combat Card */}
-                      <CombatCardView card={card} compact={false} />
+                      <CombatCardView
+                        card={card}
+                        compact={false}
+                        onJudgeVibe={handleJudgePhotoVibe}
+                      />
 
                       {/* Thumb-Friendly 3-Button Social + Combat Bar */}
                       <div className="post-actions-bar">
@@ -1789,6 +1822,7 @@ export function App() {
                       )}
                       <CombatCardView
                         card={fc}
+                        onJudgeVibe={handleJudgePhotoVibe}
                         footerActions={
                           fc.isWild ? (
                             <button
@@ -2040,6 +2074,7 @@ export function App() {
                       <CombatCardView
                         key={card.id}
                         card={card}
+                        onJudgeVibe={handleJudgePhotoVibe}
                         slotBadge={
                           inSquadIdx !== -1 ? `EQUIPPED S${inSquadIdx + 1}` : undefined
                         }
@@ -2328,6 +2363,7 @@ export function App() {
                   <CombatCardView
                     key={wCard.id}
                     card={wCard}
+                    onJudgeVibe={handleJudgePhotoVibe}
                     footerActions={
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
                         <div
@@ -2477,6 +2513,59 @@ export function App() {
                     {player.wins}/{player.losses}
                   </span>
                 </div>
+              </div>
+            </div>
+
+            {/* Photo Vibe Judgments & Stat Influence Guide */}
+            <div
+              style={{
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border-gold)',
+                borderRadius: 'var(--radius-md)',
+                padding: '1rem',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '0.65rem',
+              }}
+            >
+              <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.15rem' }}>
+                Photo Vibe Judgments &amp; Stat Boosts
+              </h2>
+              <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                Judge any photo in the <strong>Stream</strong>, <strong>My Deck</strong>, or{' '}
+                <strong>The Wilds</strong> by tapping its Vibe buttons. Every click is saved to the
+                photo and permanently modifies its combat stats:
+              </p>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(2, 1fr)',
+                  gap: '0.45rem',
+                  fontSize: '0.74rem',
+                }}
+              >
+                {VIBE_DEFINITIONS.map((vibe) => (
+                  <div
+                    key={vibe.id}
+                    style={{
+                      background: 'var(--bg-surface)',
+                      padding: '0.5rem 0.65rem',
+                      borderRadius: 'var(--radius-sm)',
+                      borderLeft: `3px solid ${vibe.color}`,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.15rem',
+                    }}
+                  >
+                    <strong style={{ color: vibe.color }}>
+                      {vibe.emoji} {vibe.label}
+                    </strong>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.7rem' }}>
+                      {vibe.description}
+                    </span>
+                  </div>
+                ))}
               </div>
             </div>
 
