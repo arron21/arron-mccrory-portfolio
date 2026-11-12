@@ -167,11 +167,16 @@ api.post(
           takenAt: opt.exif.takenAt || cExif.takenAt || '',
         };
 
+        const hintText = `${file.originalname} ${customTitles[file.originalname] || ''} ${
+          customCaptions[file.originalname] || ''
+        }`;
+
         const forged = await analyzeAndForgeCard(
           file.buffer,
           mergedExif,
           opt.width,
-          opt.height
+          opt.height,
+          hintText
         );
 
         const reportedOrigSize = Number(clientOriginalSizes[file.originalname] || 0);
@@ -194,8 +199,8 @@ api.post(
         ).trim();
 
         const defaultCaption = isWild
-          ? `Released into the Wild Rift! (${forged.rarity} ${forged.element} ${forged.role} · Power ⚔ ${forged.powerRating})`
-          : `Bound to Squad Deck from ${opt.width}×${opt.height} frame (${mergedExif.focalLength} · ${mergedExif.aperture} · ${mergedExif.shutterSpeed}).`;
+          ? `Released into the Wild Rift! [${forged.category} Photography · ${forged.categoryBonusLabel}] (${forged.rarity} ${forged.element} ${forged.role})`
+          : `Classified as ${forged.category} Photography (${forged.categoryBonusLabel}) · ${opt.width}×${opt.height} frame (${mergedExif.focalLength} · ${mergedExif.aperture}).`;
 
         const cardCaption = (
           customCaptions[file.originalname] || defaultCaption
@@ -218,6 +223,10 @@ api.post(
           blurDataUrl: opt.blurDataUrl,
           dominantColor: opt.dominantColor,
           element: forged.element,
+          category: forged.category,
+          categoryConfidence: forged.categoryConfidence,
+          categoryBonusLabel: forged.categoryBonusLabel,
+          categoryReason: forged.categoryReason,
           role: forged.role,
           rarity: forged.rarity,
           foil: forged.foil,

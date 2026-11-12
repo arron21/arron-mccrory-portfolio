@@ -29,6 +29,7 @@ import {
   type MmoPlayer,
   type FactionId,
   type ElementType,
+  type PhotoCategory,
 } from './types.ts';
 import { CombatCardView } from './components/CombatCardView.tsx';
 import { AutoBattleArenaModal } from './components/AutoBattleArenaModal.tsx';
@@ -41,6 +42,17 @@ import { preparePhotoForUpload } from './utils/clientOptimizer.ts';
 
 const LOCAL_CACHE_KEY = 'chromarift_mmo_state_cache_v2_nodemo';
 const REQUIRED_SQUAD_SIZE = 4;
+
+const PHOTO_CATEGORIES: PhotoCategory[] = [
+  'Portrait',
+  'Architecture',
+  'Nature',
+  'Still Life',
+  'Street & Action',
+  'Macro & Wildlife',
+  'Night & Astro',
+  'Fine Art & Abstract',
+];
 
 export function App() {
   const [activeTab, setActiveTab] = useState<
@@ -62,9 +74,11 @@ export function App() {
     Record<string, boolean>
   >({});
 
-  // Sanctum & Wilds element filters
-  const [vaultFilter, setVaultFilter] = useState<'ALL' | 'EQUIPPED' | ElementType>('ALL');
-  const [wildFilter, setWildFilter] = useState<'ALL' | ElementType>('ALL');
+  // Sanctum & Wilds element / photography category filters
+  const [vaultFilter, setVaultFilter] = useState<
+    'ALL' | 'EQUIPPED' | ElementType | PhotoCategory
+  >('ALL');
+  const [wildFilter, setWildFilter] = useState<'ALL' | ElementType | PhotoCategory>('ALL');
 
   // Active Auto-Battle simulation modal state
   const [activeSimulation, setActiveSimulation] = useState<AutoBattleSimulation | null>(
@@ -190,12 +204,16 @@ export function App() {
     if (vaultFilter === 'EQUIPPED') {
       return playerCards.filter((c) => player.squadCardIds.includes(c.id));
     }
-    return playerCards.filter((c) => c.element === vaultFilter);
+    return playerCards.filter(
+      (c) => c.element === vaultFilter || c.category === vaultFilter
+    );
   }, [playerCards, player, vaultFilter]);
 
   const filteredWildCards = useMemo(() => {
     if (wildFilter === 'ALL') return wildCards;
-    return wildCards.filter((c) => c.element === wildFilter);
+    return wildCards.filter(
+      (c) => c.element === wildFilter || c.category === wildFilter
+    );
   }, [wildCards, wildFilter]);
 
   const openForgeWithMode = (mode: 'deck' | 'wild') => {
@@ -432,14 +450,14 @@ export function App() {
         if (forgeDestination === 'wild') {
           showToast(
             allCreatedCards.length === 1
-              ? `🐾 Sent [${first.rarity}] ${first.title} (⚔ ${first.powerRating}) to the Wild Rift! You can fight it anytime.`
-              : `🐾 Released ${allCreatedCards.length} Photo-Cards into the Wild Rift!`
+              ? `🐾 [${first.category}] ${first.title} (${first.categoryBonusLabel}) sent to the Wild Rift!`
+              : `🐾 Classified & released ${allCreatedCards.length} Photo-Cards into the Wild Rift!`
           );
         } else {
           showToast(
             allCreatedCards.length === 1
-              ? `🛡️ Bound [${first.rarity}] ${first.title} (${first.element} ${first.role}) to your Deck!`
-              : `🛡️ Bound ${allCreatedCards.length} Photo-Cards to your Deck & Squad!`
+              ? `🛡️ [${first.category}] ${first.title} (${first.categoryBonusLabel}) bound to your Deck!`
+              : `🛡️ Classified & bound ${allCreatedCards.length} Photo-Cards to your Deck & Squad!`
           );
         }
       }
@@ -1713,25 +1731,81 @@ export function App() {
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
                   {lastForgedCards.map((fc) => (
-                    <CombatCardView
+                    <div
                       key={fc.id}
-                      card={fc}
-                      footerActions={
-                        fc.isWild ? (
-                          <button
-                            type="button"
-                            className="btn btn-crimson"
-                            style={{ width: '100%' }}
-                            onClick={() => handleFightWildCard(fc, 'pack')}
+                      style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}
+                    >
+                      {fc.category && (
+                        <div
+                          style={{
+                            background: 'var(--bg-surface)',
+                            border: '1px solid var(--border-gold)',
+                            borderRadius: 'var(--radius-sm)',
+                            padding: '0.55rem 0.7rem',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '0.2rem',
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              flexWrap: 'wrap',
+                              gap: '0.35rem',
+                            }}
                           >
-                            <Swords size={14} />{' '}
-                            {isSquadReady
-                              ? `Fight Wild ${fc.title} Now`
-                              : `Complete Squad (${playerSquad.length}/4) to Fight`}
-                          </button>
-                        ) : undefined
-                      }
-                    />
+                            <span
+                              style={{
+                                fontFamily: 'var(--font-mono)',
+                                fontSize: '0.68rem',
+                                fontWeight: 700,
+                                color: 'var(--gold-bright)',
+                                textTransform: 'uppercase',
+                              }}
+                            >
+                              📸 Classified Category: {fc.category} ({fc.categoryConfidence ?? 90}% Match)
+                            </span>
+                            {fc.categoryBonusLabel && (
+                              <span
+                                style={{
+                                  fontFamily: 'var(--font-mono)',
+                                  fontSize: '0.64rem',
+                                  color: '#4ade80',
+                                  fontWeight: 700,
+                                }}
+                              >
+                                {fc.categoryBonusLabel}
+                              </span>
+                            )}
+                          </div>
+                          {fc.categoryReason && (
+                            <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                              {fc.categoryReason}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      <CombatCardView
+                        card={fc}
+                        footerActions={
+                          fc.isWild ? (
+                            <button
+                              type="button"
+                              className="btn btn-crimson"
+                              style={{ width: '100%' }}
+                              onClick={() => handleFightWildCard(fc, 'pack')}
+                            >
+                              <Swords size={14} />{' '}
+                              {isSquadReady
+                                ? `Fight Wild ${fc.title} Now`
+                                : `Complete Squad (${playerSquad.length}/4) to Fight`}
+                            </button>
+                          ) : undefined
+                        }
+                      />
+                    </div>
                   ))}
                 </div>
 
@@ -1900,12 +1974,13 @@ export function App() {
                 </button>
               </div>
 
-              {/* Touch Filter Pills */}
+              {/* Touch Filter Pills (Elements + Photography Categories) */}
               <div className="h-scroll-strip" style={{ marginBottom: '0.85rem' }}>
                 {(
                   [
                     'ALL',
                     'EQUIPPED',
+                    ...PHOTO_CATEGORIES,
                     'Solar',
                     'Abyssal',
                     'Crimson',
@@ -2175,11 +2250,12 @@ export function App() {
               </div>
             </div>
 
-            {/* Element Filter Bar for Wild Specimens */}
+            {/* Category & Element Filter Bar for Wild Specimens */}
             <div className="h-scroll-strip">
               {(
                 [
                   'ALL',
+                  ...PHOTO_CATEGORIES,
                   'Solar',
                   'Abyssal',
                   'Crimson',
@@ -2404,6 +2480,118 @@ export function App() {
               </div>
             </div>
 
+            {/* Photography Category Classifier & Stat Modifiers Guide */}
+            <div
+              style={{
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border-gold)',
+                borderRadius: 'var(--radius-md)',
+                padding: '1rem',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '0.65rem',
+              }}
+            >
+              <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.15rem' }}>
+                Photography Categories &amp; Stat Modifiers
+              </h2>
+              <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                Every uploaded photo is analyzed across spatial composition, subject focus isolation,
+                edge geometry, color distribution, and EXIF optics to classify its{' '}
+                <strong>Photography Category</strong>—which directly shapes its combat stats and
+                squad synergies:
+              </p>
+
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.45rem',
+                  fontSize: '0.75rem',
+                }}
+              >
+                {[
+                  {
+                    title: '👤 Portrait',
+                    bonus: '+8% CRIT · +14% ATK · +8% SPD (Striker)',
+                    desc: 'Detected via center subject isolation, portrait aspect/focal length, or warm skin-tone harmonics. Excels at precision critical strikes.',
+                  },
+                  {
+                    title: '🏛️ Architecture',
+                    bonus: '+26% DEF · +18% HP · Starts w/ +16% HP Shield (Vanguard)',
+                    desc: 'Detected via strong vertical/horizontal orthogonal edge alignment, deep depth-of-field, or wide geometry. Ultimate frontline fortress.',
+                  },
+                  {
+                    title: '🌿 Nature',
+                    bonus: '+22% HP · +12% DEF · +6% ATK (Bruiser)',
+                    desc: 'Detected via organic foliage/earth palettes, top-frame sky horizons, and landscape framing. High-vitality sustained brawler.',
+                  },
+                  {
+                    title: '🏺 Still Life',
+                    bonus: '+16% ATK · +16% DEF · +4% CRIT (Arcanist)',
+                    desc: 'Detected via controlled studio/tabletop perimeter lighting and sharp center object focus. Balanced tactical spell-weaver.',
+                  },
+                  {
+                    title: '⚡ Street & Action',
+                    bonus: '+20% SPD · +14% ATK · +5% CRIT (Striker)',
+                    desc: 'Detected via fast shutter speed, high dynamic edge density, and kinetic contrast. Always strikes first in the timeline.',
+                  },
+                  {
+                    title: '🦋 Macro & Wildlife',
+                    bonus: '+20% ATK · +6% CRIT · +8% SPD (Striker)',
+                    desc: 'Detected via extreme center-to-border bokeh ratio (>1.4x) or telephoto magnification. Lethal single-target burst.',
+                  },
+                  {
+                    title: '🌙 Night & Astro',
+                    bonus: '+22% ATK · +6% CRIT · +8% HP (Arcanist)',
+                    desc: 'Detected via low-key shadow luminance with bright star/neon highlights or high ISO long exposures. Heavy arcane nuker.',
+                  },
+                  {
+                    title: '🎨 Fine Art & Abstract',
+                    bonus: '+16% ATK · +12% SPD · +5% CRIT (Arcanist)',
+                    desc: 'Detected via extreme chromatic saturation, monochrome minimalism, or experimental tonal variance. Unpredictable tempo mage.',
+                  },
+                ].map((cat) => (
+                  <div
+                    key={cat.title}
+                    style={{
+                      background: 'var(--bg-surface)',
+                      padding: '0.55rem 0.7rem',
+                      borderRadius: 'var(--radius-sm)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.18rem',
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                        gap: '0.3rem',
+                      }}
+                    >
+                      <strong style={{ color: 'var(--gold-bright)' }}>{cat.title}</strong>
+                      <span
+                        style={{
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: '0.64rem',
+                          color: '#4ade80',
+                          fontWeight: 700,
+                        }}
+                      >
+                        {cat.bonus}
+                      </span>
+                    </div>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '0.72rem' }}>
+                      {cat.desc}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             {/* Optical EXIF & RGB Stat Synthesis Guide */}
             <div
               style={{
@@ -2459,12 +2647,13 @@ export function App() {
                   }}
                 >
                   <strong style={{ color: 'var(--gold-bright)' }}>
-                    🔭 Focal Length → Combat Role:
+                    🔭 Focal Length &amp; Category → Combat Role:
                   </strong>{' '}
                   <span style={{ color: 'var(--text-secondary)' }}>
-                    Wide-angle (&lt;28mm) = <strong>Vanguard</strong> (Tank); Standard (28–58mm) ={' '}
-                    <strong>Bruiser</strong>; Portrait (58–105mm) = <strong>Arcanist</strong>;
-                    Telephoto (&gt;105mm) = <strong>Striker</strong>.
+                    Wide-angle (&lt;28mm) or Architecture = <strong>Vanguard</strong> (Tank);
+                    Standard (28–58mm) or Nature = <strong>Bruiser</strong>; Still Life, Night, or
+                    Fine Art = <strong>Arcanist</strong>; Telephoto, Portrait, Street, or Macro ={' '}
+                    <strong>Striker</strong>.
                   </span>
                 </div>
 

@@ -112,6 +112,42 @@ export function evaluateSquadSynergies(cards: MmoCard[]): SynergyBonus[] {
     }
   }
 
+  // Photography Category Synergies
+  const catCounts: Record<string, number> = {};
+  for (const c of cards) {
+    if (c.category) {
+      catCounts[c.category] = (catCounts[c.category] || 0) + 1;
+    }
+  }
+  const uniqueCategories = Object.keys(catCounts).length;
+  if (uniqueCategories >= 3) {
+    bonuses.push({
+      id: 'syn-curator-exhibition',
+      name: `Curator's Exhibition (${uniqueCategories} Genres)`,
+      description: '+10% All Stats for combining 3+ Photography Categories',
+      tier: 'chromatic',
+    });
+  }
+  for (const [cat, count] of Object.entries(catCounts)) {
+    if (count >= 2) {
+      bonuses.push({
+        id: `syn-cat-${cat}`,
+        name: `${cat} Series (${count})`,
+        description:
+          cat === 'Architecture'
+            ? '+20% DEF & +14% Structural Shield to squad'
+            : cat === 'Portrait'
+            ? '+12% Crit Chance & +14% ATK to squad'
+            : cat === 'Nature'
+            ? '+18% Max HP to squad'
+            : cat === 'Still Life'
+            ? '+15% ATK & +15% DEF to squad'
+            : `+15% ATK & +10 SPD (${cat} Resonance)`,
+        tier: 'gold',
+      });
+    }
+  }
+
   // Slot 1 Frontline Vanguard bonus
   if (cards[0]?.role === 'Vanguard' || cards[0]?.role === 'Bruiser') {
     bonuses.push({
@@ -147,17 +183,22 @@ function buildCombatUnits(
   synergies: SynergyBonus[]
 ): CombatUnitState[] {
   const hasPrismatic = synergies.some((s) => s.id === 'syn-prismatic-quartet');
+  const hasCurator = synergies.some((s) => s.id === 'syn-curator-exhibition');
   const totalHype = cards.reduce((sum, c) => sum + (c.hypeCount || 0), 0);
   const hypeMult = 1 + Math.min(0.3, totalHype * 0.004);
 
   return cards.map((card, idx) => {
     const elemTriad = synergies.some((s) => s.id === `syn-${card.element}-3`);
     const elemPair = synergies.some((s) => s.id === `syn-${card.element}-2`);
+    const catPair = card.category
+      ? synergies.some((s) => s.id === `syn-cat-${card.category}`)
+      : false;
 
-    let hpMult = hypeMult * (hasPrismatic ? 1.18 : 1);
-    let atkMult = hypeMult * (hasPrismatic ? 1.18 : 1);
-    let spdBonus = hasPrismatic ? 8 : 0;
-    let critBonus = hasPrismatic ? 12 : 0;
+    let hpMult = hypeMult * (hasPrismatic ? 1.18 : 1) * (hasCurator ? 1.1 : 1);
+    let atkMult = hypeMult * (hasPrismatic ? 1.18 : 1) * (hasCurator ? 1.1 : 1);
+    let defMult = hasCurator ? 1.1 : 1;
+    let spdBonus = (hasPrismatic ? 8 : 0) + (hasCurator ? 6 : 0);
+    let critBonus = (hasPrismatic ? 12 : 0) + (hasCurator ? 5 : 0);
 
     if (elemTriad) {
       hpMult *= 1.25;
@@ -168,20 +209,31 @@ function buildCombatUnits(
       atkMult *= 1.15;
     }
 
-    if (
-      card.opticalTrait === 'Fast-Shutter Blitz' ||
-      card.secondaryTrait === 'Fast-Shutter Blitz'
-    ) {
-      spdBonus += 14;
+    if (catPair) {
+      if (card.category === 'Architecture') defMult *= 1.2;
+      else if (card.category === 'Portrait') {
+        atkMult *= 1.14;
+        critBonus += 12;
+      } else if (card.category === 'Nature') hpMult *= 1.18;
+      else if (card.category === 'Still Life') {
+        atkMult *= 1.15;
+        defMult *= 1.15;
+      } else {
+        atkMult *= 1.15;
+        spdBonus += 10;
+      }
     }
-    if (card.opticalTrait === 'Bokeh Assassin' || card.secondaryTrait === 'Bokeh Assassin') {
-      critBonus += 10;
+
+    if (card.category === 'Street & Action') {
+      spdBonus += 10;
     }
 
     const maxHp = Math.round(card.hp * hpMult);
     const startingShield =
       idx === 0 && (card.role === 'Vanguard' || card.role === 'Bruiser')
         ? Math.round(maxHp * 0.22)
+        : card.category === 'Architecture'
+        ? Math.round(maxHp * 0.16)
         : card.opticalTrait === 'Long-Exposure Bastion'
         ? Math.round(maxHp * 0.15)
         : 0;
@@ -206,7 +258,7 @@ function buildCombatUnits(
       hp: maxHp,
       shield: startingShield,
       atk: Math.round(card.atk * atkMult),
-      def: card.def,
+      def: Math.round(card.def * defMult),
       spd: card.spd + spdBonus,
       crit: Math.min(75, card.crit + critBonus),
       actionCount: 0,

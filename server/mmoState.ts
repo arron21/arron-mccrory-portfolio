@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { db } from './db.ts';
 import type {
   ElementType,
+  PhotoCategory,
   CardRole,
   RarityTier,
   FoilTier,
@@ -27,6 +28,10 @@ export interface MmoCard {
   blurDataUrl?: string;
   dominantColor: string;
   element: ElementType;
+  category: PhotoCategory;
+  categoryConfidence?: number;
+  categoryBonusLabel?: string;
+  categoryReason?: string;
   role: CardRole;
   rarity: RarityTier;
   foil: FoilTier;

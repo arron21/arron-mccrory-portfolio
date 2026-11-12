@@ -6,6 +6,16 @@ export type ElementType =
   | 'Astral'
   | 'Monochrome';
 
+export type PhotoCategory =
+  | 'Portrait'
+  | 'Architecture'
+  | 'Nature'
+  | 'Still Life'
+  | 'Street & Action'
+  | 'Macro & Wildlife'
+  | 'Night & Astro'
+  | 'Fine Art & Abstract';
+
 export type CardRole = 'Vanguard' | 'Bruiser' | 'Striker' | 'Arcanist';
 
 export type RarityTier = 'Common' | 'Rare' | 'Epic' | 'Legendary' | 'Mythic';
@@ -56,6 +66,10 @@ export interface MmoCard {
   blurDataUrl?: string;
   dominantColor: string;
   element: ElementType;
+  category?: PhotoCategory;
+  categoryConfidence?: number;
+  categoryBonusLabel?: string;
+  categoryReason?: string;
   role: CardRole;
   rarity: RarityTier;
   foil: FoilTier;

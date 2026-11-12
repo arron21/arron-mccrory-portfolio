@@ -11,8 +11,9 @@ import {
   Shield,
   ChevronDown,
   ChevronUp,
+  Tag,
 } from 'lucide-react';
-import { formatBytes, type MmoCard, type ElementType } from '../types.ts';
+import { formatBytes, type MmoCard, type ElementType, type PhotoCategory } from '../types.ts';
 
 interface CombatCardViewProps {
   card: MmoCard;
@@ -28,6 +29,17 @@ const ELEMENT_COLORS: Record<ElementType, string> = {
   Verdant: 'var(--elem-verdant)',
   Astral: 'var(--elem-astral)',
   Monochrome: 'var(--elem-monochrome)',
+};
+
+const CATEGORY_ICONS: Record<PhotoCategory, string> = {
+  Portrait: '👤',
+  Architecture: '🏛️',
+  Nature: '🌿',
+  'Still Life': '🏺',
+  'Street & Action': '⚡',
+  'Macro & Wildlife': '🦋',
+  'Night & Astro': '🌙',
+  'Fine Art & Abstract': '🎨',
 };
 
 export function ElementIcon({ element, size = 13 }: { element: ElementType; size?: number }) {
@@ -55,6 +67,8 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
 }) => {
   const [showTelemetry, setShowTelemetry] = useState(false);
   const elemColor = ELEMENT_COLORS[card.element] || 'var(--gold-primary)';
+  const category = card.category || 'Still Life';
+  const catEmoji = CATEGORY_ICONS[category] || '📷';
 
   return (
     <article className={`combat-card foil-${card.foil}`}>
@@ -88,7 +102,7 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
         <div className="card-art-bottom">
           <div className="card-title-group" style={{ minWidth: 0 }}>
             <div className="card-epithet">
-              {card.role} · {card.epithet}
+              {catEmoji} {category} · {card.role}
             </div>
             <h3
               style={{
@@ -107,6 +121,49 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
       </div>
 
       <div className="card-body">
+        {/* Photography Category & Stat Modifier Pill Row */}
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: '0.4rem',
+            background: 'hsla(38, 62%, 60%, 0.1)',
+            border: '1px solid var(--border-gold)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '0.35rem 0.55rem',
+            fontFamily: 'var(--font-mono)',
+            fontSize: '0.63rem',
+          }}
+        >
+          <span
+            style={{
+              color: 'var(--gold-bright)',
+              fontWeight: 700,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.3rem',
+            }}
+          >
+            <Tag size={11} />
+            <span>
+              {catEmoji} {category}
+              {card.categoryConfidence ? ` (${card.categoryConfidence}%)` : ''}
+            </span>
+          </span>
+          <span
+            style={{
+              color: '#4ade80',
+              fontWeight: 600,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {card.categoryBonusLabel || '+Stat Bonus'}
+          </span>
+        </div>
+
         <div className="card-stats-row">
           <div>
             <span className="stat-box-label">HP</span>
@@ -201,7 +258,7 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
           </div>
         )}
 
-        {/* Tap-to-Expand EXIF & RGB Spectrum Telemetry Strip */}
+        {/* Tap-to-Expand EXIF, RGB Spectrum & Category Classification Telemetry */}
         <button
           type="button"
           className="card-exif-strip"
@@ -251,9 +308,14 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
               color: 'var(--text-secondary)',
               display: 'flex',
               flexDirection: 'column',
-              gap: '0.25rem',
+              gap: '0.28rem',
             }}
           >
+            {card.categoryReason && (
+              <div style={{ color: 'var(--gold-bright)' }}>
+                <strong>Category Analysis ({category}):</strong> {card.categoryReason}
+              </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span>
                 RGB Spectrum: R{card.colorTelemetry.r} · G{card.colorTelemetry.g} · B
