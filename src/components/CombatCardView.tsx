@@ -72,6 +72,10 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
           <span className="card-pill">
             {slotBadge ? (
               <span style={{ color: 'var(--gold-bright)' }}>{slotBadge}</span>
+            ) : card.isWild ? (
+              <span style={{ color: '#f87171' }}>
+                🐾 WILD · {card.rarity}
+              </span>
             ) : (
               <span>
                 {card.rarity}

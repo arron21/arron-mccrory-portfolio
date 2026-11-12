@@ -11,6 +11,7 @@ import { analyzeAndForgeCard } from './cardForge.ts';
 import {
   getMmoState,
   saveMmoState,
+  resetMmoState,
   createNewMmoCardId,
   type MmoCard,
   type FactionId,
@@ -68,7 +69,13 @@ api.get('/mmo/state', (req: Request, res: Response) => {
   });
 });
 
-// Forge Photo(s) into Collectible Combat Cards via Sharp + Exifr + Spectrum Alchemy
+// Reset MMO State (Clean Slate)
+api.post('/mmo/reset', (_req: Request, res: Response) => {
+  const state = resetMmoState();
+  res.json({ ok: true, state });
+});
+
+// Forge Photo(s) into Collectible Combat Cards (Either Bound to Player Deck OR Sent to the Wild!)
 api.post(
   '/mmo/forge',
   upload.array('photos', 10),
@@ -84,9 +91,11 @@ api.post(
       const player =
         state.players.find((p) => p.id === 'player-arron21') || state.players[0];
 
+      const destination = req.body.destination === 'wild' ? 'wild' : 'deck';
+      const isWild = destination === 'wild';
       const shareToFeed = req.body.shareToFeed !== 'false';
       const equipSlot =
-        req.body.equipSlot !== undefined && req.body.equipSlot !== ''
+        !isWild && req.body.equipSlot !== undefined && req.body.equipSlot !== ''
           ? Number(req.body.equipSlot)
           : -1;
 
@@ -149,7 +158,7 @@ api.post(
 
         const cExif = clientExifMap[file.originalname] || {};
         const mergedExif = {
-          camera: opt.exif.camera || cExif.camera || 'Digital Medium Format',
+          camera: opt.exif.camera || cExif.camera || 'Optical Camera Sensor',
           lens: opt.exif.lens || cExif.lens || 'Prime Optical Glass',
           focalLength: opt.exif.focalLength || cExif.focalLength || '35mm',
           aperture: opt.exif.aperture || cExif.aperture || 'f/2.0',
@@ -181,19 +190,26 @@ api.post(
         const cardTitle = (
           customTitles[file.originalname] ||
           baseTitle ||
-          'Chromatic Relic'
+          (isWild ? 'Wild Rift Anomaly' : 'Chromatic Relic')
         ).trim();
+
+        const defaultCaption = isWild
+          ? `Released into the Wild Rift! (${forged.rarity} ${forged.element} ${forged.role} · Power ⚔ ${forged.powerRating})`
+          : `Bound to Squad Deck from ${opt.width}×${opt.height} frame (${mergedExif.focalLength} · ${mergedExif.aperture} · ${mergedExif.shutterSpeed}).`;
+
         const cardCaption = (
-          customCaptions[file.originalname] ||
-          `Forged from ${opt.width}×${opt.height} master frame (${mergedExif.focalLength} · ${mergedExif.aperture} · ${mergedExif.shutterSpeed}).`
+          customCaptions[file.originalname] || defaultCaption
         ).trim();
 
         const newCard: MmoCard = {
           id: cardId,
-          ownerId: player.id,
-          ownerName: player.displayName,
+          ownerId: isWild ? 'wild-rift' : player.id,
+          ownerName: isWild ? `Wild Rift (via ${player.displayName})` : player.displayName,
           ownerHandle: player.username,
           ownerFaction: player.faction,
+          isWild,
+          wildEncounters: 0,
+          wildWins: 0,
           title: cardTitle,
           epithet: forged.epithet,
           caption: cardCaption,
@@ -234,10 +250,15 @@ api.post(
         state.cards.unshift(newCard);
         forgedCards.push(newCard);
 
-        if (equipSlot >= 0 && equipSlot < 4) {
-          player.squadCardIds[equipSlot] = newCard.id;
-        } else if (player.squadCardIds.length < 4) {
-          player.squadCardIds.push(newCard.id);
+        // Only equip or store in Player's Deck if NOT sent to the Wild
+        if (!isWild) {
+          if (player.squadCardIds.length < 4) {
+            if (!player.squadCardIds.includes(newCard.id)) {
+              player.squadCardIds.push(newCard.id);
+            }
+          } else if (equipSlot >= 0 && equipSlot < 4) {
+            player.squadCardIds[equipSlot] = newCard.id;
+          }
         }
 
         if (shareToFeed) {
@@ -248,6 +269,7 @@ api.post(
             authorName: player.displayName,
             authorHandle: player.username,
             authorFaction: player.faction,
+            isWildPost: isWild,
             caption: cardCaption,
             hypeCount: 1,
             comments: [],
@@ -255,10 +277,10 @@ api.post(
           });
         }
 
-        // Award forging currencies & XP
-        player.lumenDust += 120;
-        player.chromaticShards += 4;
-        player.xp += 85;
+        // Award forging / discovery currencies & XP
+        player.lumenDust += isWild ? 90 : 120;
+        player.chromaticShards += isWild ? 3 : 4;
+        player.xp += isWild ? 65 : 85;
         if (player.xp >= player.level * 200) {
           player.level += 1;
         }
@@ -267,6 +289,7 @@ api.post(
       saveMmoState(state);
       res.status(201).json({
         ok: true,
+        destination,
         forgedCards,
         state,
       });
@@ -276,6 +299,35 @@ api.post(
     }
   }
 );
+
+// Release an existing Deck Card into the Wild Rift so it can be fought later
+api.post('/mmo/cards/:id/release-wild', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const state = getMmoState();
+  const player = state.players.find((p) => p.id === 'player-arron21') || state.players[0];
+  const card = state.cards.find((c) => c.id === id);
+
+  if (!card) {
+    res.status(404).json({ error: 'Card not found' });
+    return;
+  }
+
+  card.isWild = true;
+  card.ownerId = 'wild-rift';
+  card.ownerName = `Wild Rift (via ${player.displayName})`;
+  card.wildEncounters = card.wildEncounters || 0;
+  card.wildWins = card.wildWins || 0;
+
+  // Remove from player's active squad if equipped
+  player.squadCardIds = player.squadCardIds.filter((cid) => cid !== card.id);
+
+  // Grant release bonus
+  player.lumenDust += 60;
+  player.chromaticShards += 2;
+
+  saveMmoState(state);
+  res.json({ ok: true, card, state });
+});
 
 // Hype / Boost a Social Feed Post (Directly buffs the Card's Combat Stats!)
 api.post('/mmo/posts/:id/hype', (req: Request, res: Response) => {
@@ -291,7 +343,6 @@ api.post('/mmo/posts/:id/hype', (req: Request, res: Response) => {
   const card = state.cards.find((c) => c.id === post.cardId);
   if (card) {
     card.hypeCount += 1;
-    // Every Hype stack buffs HP and ATK slightly
     card.hp = Math.round(card.hp * 1.015);
     card.atk = Math.round(card.atk * 1.015);
     card.powerRating = Math.round(
@@ -347,8 +398,13 @@ api.put('/mmo/player/squad', (req: Request, res: Response) => {
   const state = getMmoState();
   const player = state.players.find((p) => p.id === 'player-arron21') || state.players[0];
 
-  if (Array.isArray(squadCardIds) && squadCardIds.length > 0) {
-    player.squadCardIds = squadCardIds.slice(0, 4);
+  if (Array.isArray(squadCardIds)) {
+    // Only allow cards owned by the player (not wild cards)
+    const validIds = squadCardIds.filter((cid) => {
+      const c = state.cards.find((card) => card.id === cid);
+      return c && !c.isWild && c.ownerId === player.id;
+    });
+    player.squadCardIds = validIds.slice(0, 4);
   }
   if (faction && ['Helios', 'Umbra', 'Prism'].includes(faction)) {
     player.faction = faction;
@@ -424,7 +480,6 @@ api.post('/mmo/cards/:id/upgrade', (req: Request, res: Response) => {
     card.spd += Math.round(sacCard.spd * 0.08);
     card.level += 1;
 
-    // Remove sacrificed card from inventory & squad if present
     state.cards.splice(sacIdx, 1);
     player.squadCardIds = player.squadCardIds.filter((cid) => cid !== sacrificeCardId);
   }
@@ -437,67 +492,39 @@ api.post('/mmo/cards/:id/upgrade', (req: Request, res: Response) => {
   res.json({ ok: true, card, state });
 });
 
-// Record Auto-Battle Outcome & Distribute MMO Rewards / Territory Control
+// Record Auto-Battle Outcome against Wild Photo Cards
 api.post('/mmo/battle/record', (req: Request, res: Response) => {
-  const { won, mode, zoneId, bossDamageDealt } = (req.body || {}) as {
+  const { won, wildCardIds } = (req.body || {}) as {
     won: boolean;
-    mode: 'pvp' | 'territory' | 'raid';
-    zoneId?: string;
-    bossDamageDealt?: number;
+    wildCardIds?: string[];
   };
 
   const state = getMmoState();
   const player = state.players.find((p) => p.id === 'player-arron21') || state.players[0];
 
-  if (mode === 'raid' && zoneId) {
-    const zone = state.zones.find((z) => z.id === zoneId);
-    if (zone) {
-      const dmg = Math.max(400, Number(bossDamageDealt || 1800));
-      zone.raidBoss.currentHp = Math.max(0, zone.raidBoss.currentHp - dmg);
-      if (zone.raidBoss.currentHp === 0) {
-        // Boss defeated! Reset for next tier and grant huge bonus
-        zone.raidBoss.maxHp = Math.round(zone.raidBoss.maxHp * 1.15);
-        zone.raidBoss.currentHp = zone.raidBoss.maxHp;
-        player.lumenDust += zone.raidBoss.rewardLumen * 2;
-        player.chromaticShards += zone.raidBoss.rewardShards * 2;
-      } else {
-        player.lumenDust += zone.raidBoss.rewardLumen;
-        player.chromaticShards += zone.raidBoss.rewardShards;
-      }
-      player.xp += 140;
-      player.wins += 1;
-    }
-  } else if (won) {
-    player.wins += 1;
-    player.eloRating += 24;
-    player.lumenDust += mode === 'territory' ? 180 : 140;
-    player.chromaticShards += mode === 'territory' ? 5 : 3;
-    player.xp += 110;
-
-    if (zoneId) {
-      const zone = state.zones.find((z) => z.id === zoneId);
-      if (zone) {
-        const shift = 6;
-        if (player.faction === 'Helios') {
-          zone.heliosControl = Math.min(85, zone.heliosControl + shift);
-          zone.umbraControl = Math.max(5, zone.umbraControl - 3);
-          zone.prismControl = Math.max(5, 100 - zone.heliosControl - zone.umbraControl);
-        } else if (player.faction === 'Umbra') {
-          zone.umbraControl = Math.min(85, zone.umbraControl + shift);
-          zone.heliosControl = Math.max(5, zone.heliosControl - 3);
-          zone.prismControl = Math.max(5, 100 - zone.heliosControl - zone.umbraControl);
-        } else {
-          zone.prismControl = Math.min(85, zone.prismControl + shift);
-          zone.heliosControl = Math.max(5, zone.heliosControl - 3);
-          zone.umbraControl = Math.max(5, 100 - zone.heliosControl - zone.prismControl);
+  if (Array.isArray(wildCardIds)) {
+    for (const wid of wildCardIds) {
+      const wCard = state.cards.find((c) => c.id === wid);
+      if (wCard) {
+        wCard.wildEncounters = (wCard.wildEncounters || 0) + 1;
+        if (!won) {
+          wCard.wildWins = (wCard.wildWins || 0) + 1;
         }
       }
     }
+  }
+
+  if (won) {
+    player.wins += 1;
+    player.eloRating += 24;
+    player.lumenDust += 150;
+    player.chromaticShards += 4;
+    player.xp += 120;
   } else {
     player.losses += 1;
     player.eloRating = Math.max(800, player.eloRating - 12);
-    player.lumenDust += 45;
-    player.xp += 40;
+    player.lumenDust += 50;
+    player.xp += 45;
   }
 
   if (player.xp >= player.level * 200) {

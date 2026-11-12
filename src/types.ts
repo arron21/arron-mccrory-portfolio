@@ -45,6 +45,9 @@ export interface MmoCard {
   ownerName: string;
   ownerHandle: string;
   ownerFaction: FactionId;
+  isWild?: boolean;
+  wildEncounters?: number;
+  wildWins?: number;
   title: string;
   epithet: string;
   caption: string;
@@ -99,6 +102,7 @@ export interface MmoFeedPost {
   authorName: string;
   authorHandle: string;
   authorFaction: FactionId;
+  isWildPost?: boolean;
   caption: string;
   hypeCount: number;
   comments: FeedComment[];
@@ -122,41 +126,10 @@ export interface MmoPlayer {
   isNpc: boolean;
 }
 
-export interface MmoWorldZone {
-  id: string;
-  name: string;
-  subtitle: string;
-  element: ElementType;
-  description: string;
-  bannerUrl: string;
-  heliosControl: number;
-  umbraControl: number;
-  prismControl: number;
-  guardianPlayerId: string;
-  raidBoss: {
-    id: string;
-    name: string;
-    epithet: string;
-    element: ElementType;
-    imageUrl: string;
-    maxHp: number;
-    currentHp: number;
-    atk: number;
-    def: number;
-    spd: number;
-    crit: number;
-    abilityName: string;
-    abilityDesc: string;
-    rewardLumen: number;
-    rewardShards: number;
-  };
-}
-
 export interface MmoState {
   players: MmoPlayer[];
   cards: MmoCard[];
   posts: MmoFeedPost[];
-  zones: MmoWorldZone[];
 }
 
 export function formatBytes(bytes: number): string {
