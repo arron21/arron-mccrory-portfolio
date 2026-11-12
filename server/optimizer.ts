@@ -188,6 +188,7 @@ export async function optimizeUploadedPhoto(
     galleryAvifOut,
     lightboxWebpOut,
     lightboxAvifOut,
+    cardPersistentWebpBuf,
   ] = await Promise.all([
     sharp(buffer, { failOn: 'none' })
       .rotate()
@@ -201,53 +202,39 @@ export async function optimizeUploadedPhoto(
       .toFile(thumbAvifPath),
     sharp(buffer, { failOn: 'none' })
       .rotate()
-      .resize({ width: 1400, withoutEnlargement: true })
+      .resize({ width: 1200, withoutEnlargement: true })
       .webp({ quality: webpQ, effort: 4 })
       .toFile(galleryWebpPath),
     sharp(buffer, { failOn: 'none' })
       .rotate()
-      .resize({ width: 1400, withoutEnlargement: true })
+      .resize({ width: 1200, withoutEnlargement: true })
       .avif({ quality: avifQ, effort: 3 })
       .toFile(galleryAvifPath),
     sharp(buffer, { failOn: 'none' })
       .rotate()
-      .resize({ width: 2400, height: 2400, fit: 'inside', withoutEnlargement: true })
+      .resize({ width: 2000, height: 2000, fit: 'inside', withoutEnlargement: true })
       .webp({ quality: Math.min(95, webpQ + 4), effort: 4 })
       .toFile(lightboxWebpPath),
     sharp(buffer, { failOn: 'none' })
       .rotate()
-      .resize({ width: 2400, height: 2400, fit: 'inside', withoutEnlargement: true })
+      .resize({ width: 2000, height: 2000, fit: 'inside', withoutEnlargement: true })
       .avif({ quality: Math.min(92, avifQ + 4), effort: 3 })
       .toFile(lightboxAvifPath),
+    // Self-contained persistent 800px WebP buffer (~35-55KB) so uploaded cards never 404 across restarts or serverless instances
+    sharp(buffer, { failOn: 'none' })
+      .rotate()
+      .resize({ width: 800, height: 800, fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: 76, effort: 4 })
+      .toBuffer(),
   ]);
 
-  const isServerless = Boolean(process.env.VERCEL);
-
-  const getVariantUrl = async (filePath: string, publicPath: string, mime: string) => {
-    if (!isServerless) return publicPath;
-    try {
-      const buf = await fs.readFile(filePath);
-      return `data:${mime};base64,${buf.toString('base64')}`;
-    } catch {
-      return publicPath;
-    }
-  };
-
-  const [
-    thumbWebpUrl,
-    thumbAvifUrl,
-    galleryWebpUrl,
-    galleryAvifUrl,
-    lightboxWebpUrl,
-    lightboxAvifUrl,
-  ] = await Promise.all([
-    getVariantUrl(thumbWebpPath, `/uploads/thumb/${id}.webp`, 'image/webp'),
-    getVariantUrl(thumbAvifPath, `/uploads/thumb/${id}.avif`, 'image/avif'),
-    getVariantUrl(galleryWebpPath, `/uploads/gallery/${id}.webp`, 'image/webp'),
-    getVariantUrl(galleryAvifPath, `/uploads/gallery/${id}.avif`, 'image/avif'),
-    getVariantUrl(lightboxWebpPath, `/uploads/lightbox/${id}.webp`, 'image/webp'),
-    getVariantUrl(lightboxAvifPath, `/uploads/lightbox/${id}.avif`, 'image/avif'),
-  ]);
+  const persistentDataUrl = `data:image/webp;base64,${cardPersistentWebpBuf.toString('base64')}`;
+  const thumbWebpUrl = persistentDataUrl;
+  const thumbAvifUrl = `/uploads/thumb/${id}.avif`;
+  const galleryWebpUrl = persistentDataUrl;
+  const galleryAvifUrl = `/uploads/gallery/${id}.avif`;
+  const lightboxWebpUrl = persistentDataUrl;
+  const lightboxAvifUrl = `/uploads/lightbox/${id}.avif`;
 
   const variants: PhotoVariants = {
     thumb_webp: {

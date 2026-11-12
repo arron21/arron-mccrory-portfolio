@@ -206,10 +206,29 @@ export interface MmoPlayer {
   isNpc: boolean;
 }
 
+export interface SessionUser {
+  id: string;
+  name: string;
+  username: string;
+  email: string;
+  avatarUrl?: string;
+  provider?: string;
+}
+
+export interface MmoUserAccount {
+  id: string;
+  username: string;
+  displayName: string;
+  faction: FactionId;
+}
+
 export interface MmoState {
   players: MmoPlayer[];
   cards: MmoCard[];
   posts: MmoFeedPost[];
+  sessionUser?: SessionUser | null;
+  activePlayerId?: string;
+  accounts?: MmoUserAccount[];
 }
 
 export function formatBytes(bytes: number): string {

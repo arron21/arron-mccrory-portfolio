@@ -6,14 +6,26 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { UPLOADS_DIR } from './db.ts';
 import { optimizeUploadedPhoto } from './optimizer.ts';
-import { registerAuthRoutes, getSessionUser } from './auth.ts';
+import {
+  registerAuthRoutes,
+  getSessionUser,
+  createSession,
+  type SessionUser,
+} from './auth.ts';
 import { analyzeAndForgeCard } from './cardForge.ts';
 import {
   getMmoState,
   saveMmoState,
   resetMmoState,
   createNewMmoCardId,
+  registerMmoAccount,
+  loginMmoAccount,
+  listRegisteredAccounts,
+  ensurePlayerInState,
+  mergeClientStateIntoServer,
   type MmoCard,
+  type MmoPlayer,
+  type MmoState,
   type FactionId,
   type FoilTier,
 } from './mmoState.ts';
@@ -21,7 +33,7 @@ import {
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '15mb' }));
 app.use(cookieParser());
 
 // Serve optimized WebP/AVIF derivatives with aggressive caching
@@ -59,13 +71,143 @@ const upload = multer({
 const api = express.Router();
 registerAuthRoutes(api);
 
+function resolveRequestPlayer(req: Request, state: MmoState): MmoPlayer {
+  const sessionUser = getSessionUser(req);
+  if (sessionUser) {
+    const playerId = sessionUser.id.startsWith('player-')
+      ? sessionUser.id
+      : `player-${sessionUser.username.toLowerCase()}`;
+    return ensurePlayerInState(state, {
+      id: playerId,
+      username: sessionUser.username,
+      displayName: sessionUser.name,
+    });
+  }
+
+  const headerPlayerId =
+    (req.headers['x-player-id'] as string | undefined) ||
+    (req.body?.playerId as string | undefined);
+  if (headerPlayerId) {
+    const found = state.players.find((p) => p.id === headerPlayerId);
+    if (found) return found;
+  }
+
+  return state.players.find((p) => p.id === 'player-arron21') || state.players[0];
+}
+
 // Get Full CHROMARIFT MMO State
 api.get('/mmo/state', (req: Request, res: Response) => {
   const state = getMmoState();
   const sessionUser = getSessionUser(req);
+  const activePlayer = resolveRequestPlayer(req, state);
+  saveMmoState(state);
   res.json({
     ...state,
     sessionUser,
+    activePlayerId: activePlayer.id,
+    accounts: listRegisteredAccounts(),
+  });
+});
+
+// Sync Client IndexedDB / LocalStorage State into Server DB (Prevents upload loss across serverless cold starts!)
+api.post('/mmo/sync', (req: Request, res: Response) => {
+  const incoming = (req.body?.state || req.body || {}) as Partial<MmoState>;
+  const state = mergeClientStateIntoServer(incoming);
+  const sessionUser = getSessionUser(req);
+  const activePlayer = resolveRequestPlayer(req, state);
+  saveMmoState(state);
+  res.json({
+    ok: true,
+    state,
+    sessionUser,
+    activePlayerId: activePlayer.id,
+    accounts: listRegisteredAccounts(),
+  });
+});
+
+// Register a New MMO Player Account
+api.post('/mmo/auth/register', (req: Request, res: Response) => {
+  const { username, displayName, password, faction } = (req.body || {}) as {
+    username?: string;
+    displayName?: string;
+    password?: string;
+    faction?: FactionId;
+  };
+
+  const result = registerMmoAccount(
+    username || '',
+    displayName || '',
+    password || '',
+    faction
+  );
+  if (!result.ok) {
+    res.status(400).json({ error: result.error });
+    return;
+  }
+
+  const sessionUser: SessionUser = {
+    id: result.account.id,
+    name: result.account.displayName,
+    username: result.account.username,
+    email: `${result.account.username}@chromarift.local`,
+    provider: 'local-owner',
+  };
+  createSession(res, sessionUser);
+
+  const state = getMmoState();
+  res.status(201).json({
+    ok: true,
+    sessionUser,
+    activePlayerId: result.player.id,
+    player: result.player,
+    state,
+    accounts: listRegisteredAccounts(),
+  });
+});
+
+// Log In to an Existing MMO Player Account
+api.post('/mmo/auth/login', (req: Request, res: Response) => {
+  const { username, password, quickLogin } = (req.body || {}) as {
+    username?: string;
+    password?: string;
+    quickLogin?: boolean;
+  };
+
+  const result = loginMmoAccount(username || '', password, Boolean(quickLogin));
+  if (!result.ok) {
+    res.status(401).json({ error: result.error });
+    return;
+  }
+
+  const sessionUser: SessionUser = {
+    id: result.account.id,
+    name: result.account.displayName,
+    username: result.account.username,
+    email: `${result.account.username}@chromarift.local`,
+    provider: 'local-owner',
+  };
+  createSession(res, sessionUser);
+
+  const state = getMmoState();
+  res.json({
+    ok: true,
+    sessionUser,
+    activePlayerId: result.player.id,
+    player: result.player,
+    state,
+    accounts: listRegisteredAccounts(),
+  });
+});
+
+// Log Out of Current Session
+api.post('/mmo/auth/logout', (_req: Request, res: Response) => {
+  res.clearCookie('arron_portfolio_session', { path: '/' });
+  const state = getMmoState();
+  res.json({
+    ok: true,
+    sessionUser: null,
+    state,
+    accounts: listRegisteredAccounts(),
   });
 });
 
@@ -88,8 +230,7 @@ api.post(
       }
 
       const state = getMmoState();
-      const player =
-        state.players.find((p) => p.id === 'player-arron21') || state.players[0];
+      const player = resolveRequestPlayer(req, state);
 
       const destination = req.body.destination === 'wild' ? 'wild' : 'deck';
       const isWild = destination === 'wild';
@@ -321,7 +462,7 @@ api.post(
 api.post('/mmo/cards/:id/release-wild', (req: Request, res: Response) => {
   const { id } = req.params;
   const state = getMmoState();
-  const player = state.players.find((p) => p.id === 'player-arron21') || state.players[0];
+  const player = resolveRequestPlayer(req, state);
   const card = state.cards.find((c) => c.id === id);
 
   if (!card) {
@@ -449,7 +590,7 @@ api.post('/mmo/cards/:id/judge', (req: Request, res: Response) => {
   }
 
   // Reward judging player
-  const player = state.players.find((p) => p.id === 'player-arron21') || state.players[0];
+  const player = resolveRequestPlayer(req, state);
   player.lumenDust += 10;
   player.xp += 15;
   if (player.xp >= player.level * 200) {
@@ -487,7 +628,7 @@ api.post('/mmo/posts/:id/hype', (req: Request, res: Response) => {
     );
   }
 
-  const player = state.players.find((p) => p.id === 'player-arron21') || state.players[0];
+  const player = resolveRequestPlayer(req, state);
   player.lumenDust += 15;
 
   saveMmoState(state);
@@ -510,7 +651,7 @@ api.post('/mmo/posts/:id/comment', (req: Request, res: Response) => {
     return;
   }
 
-  const player = state.players.find((p) => p.id === 'player-arron21') || state.players[0];
+  const player = resolveRequestPlayer(req, state);
   post.comments.push({
     id: `c-${crypto.randomUUID().slice(0, 6)}`,
     authorName: player.displayName,
@@ -533,7 +674,7 @@ api.put('/mmo/player/squad', (req: Request, res: Response) => {
   };
 
   const state = getMmoState();
-  const player = state.players.find((p) => p.id === 'player-arron21') || state.players[0];
+  const player = resolveRequestPlayer(req, state);
 
   if (Array.isArray(squadCardIds)) {
     // Only allow cards owned by the player (not wild cards)
@@ -563,7 +704,7 @@ api.post('/mmo/cards/:id/upgrade', (req: Request, res: Response) => {
   };
 
   const state = getMmoState();
-  const player = state.players.find((p) => p.id === 'player-arron21') || state.players[0];
+  const player = resolveRequestPlayer(req, state);
   const card = state.cards.find((c) => c.id === id);
 
   if (!card) {
@@ -637,7 +778,7 @@ api.post('/mmo/battle/record', (req: Request, res: Response) => {
   };
 
   const state = getMmoState();
-  const player = state.players.find((p) => p.id === 'player-arron21') || state.players[0];
+  const player = resolveRequestPlayer(req, state);
 
   if (Array.isArray(wildCardIds)) {
     for (const wid of wildCardIds) {

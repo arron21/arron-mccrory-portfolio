@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Swords,
   Sparkles,
-  Flame,
   Trees,
   Trophy,
   UploadCloud,
@@ -21,6 +20,8 @@ import {
   Plus,
   Compass,
   Crown,
+  User,
+  LogIn,
 } from 'lucide-react';
 import {
   formatBytes,
@@ -32,17 +33,25 @@ import {
   type ElementType,
   type PhotoCategory,
   type VibeType,
+  type SessionUser,
+  type MmoUserAccount,
 } from './types.ts';
 import { CombatCardView } from './components/CombatCardView.tsx';
 import { AutoBattleArenaModal } from './components/AutoBattleArenaModal.tsx';
+import { AuthModal } from './components/AuthModal.tsx';
 import {
   evaluateSquadSynergies,
   simulateAutoBattle,
   type AutoBattleSimulation,
 } from './utils/autoBattler.ts';
 import { preparePhotoForUpload } from './utils/clientOptimizer.ts';
+import {
+  savePersistentMmoState,
+  loadPersistentMmoState,
+  getSavedActivePlayerId,
+  setSavedActivePlayerId,
+} from './utils/persistentStore.ts';
 
-const LOCAL_CACHE_KEY = 'chromarift_mmo_state_cache_v2_nodemo';
 const REQUIRED_SQUAD_SIZE = 4;
 
 const PHOTO_CATEGORIES: PhotoCategory[] = [
@@ -65,6 +74,13 @@ export function App() {
   const [mobileShellMode, setMobileShellMode] = useState(true);
 
   const [mmoState, setMmoState] = useState<MmoState | null>(null);
+  const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
+  const [activePlayerId, setActivePlayerId] = useState<string>(
+    () => getSavedActivePlayerId() || 'player-arron21'
+  );
+  const [accounts, setAccounts] = useState<MmoUserAccount[]>([]);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -119,52 +135,111 @@ export function App() {
 
   const syncState = (nextState: MmoState) => {
     setMmoState(nextState);
-    try {
-      localStorage.removeItem('chromarift_mmo_state_cache_v1');
-      localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(nextState));
-    } catch {
-      // Ignore storage quota errors
+    if (nextState.sessionUser !== undefined) {
+      setSessionUser(nextState.sessionUser || null);
     }
+    if (nextState.activePlayerId) {
+      setActivePlayerId(nextState.activePlayerId);
+      setSavedActivePlayerId(nextState.activePlayerId);
+    }
+    if (Array.isArray(nextState.accounts)) {
+      setAccounts(nextState.accounts);
+    }
+    void savePersistentMmoState(nextState);
   };
 
   const fetchMmoState = async () => {
     try {
-      localStorage.removeItem('chromarift_mmo_state_cache_v1');
-      const res = await fetch('/api/mmo/state');
+      try {
+        localStorage.removeItem('chromarift_mmo_state_cache_v1');
+      } catch {
+        // Ignore
+      }
+
+      const savedPid = getSavedActivePlayerId() || 'player-arron21';
+      const [localPersisted, res] = await Promise.all([
+        loadPersistentMmoState(),
+        fetch('/api/mmo/state', {
+          headers: { 'x-player-id': savedPid },
+        }),
+      ]);
+
       if (res.ok) {
         const serverState = (await res.json()) as MmoState;
-        try {
-          const cachedRaw = localStorage.getItem(LOCAL_CACHE_KEY);
-          if (cachedRaw) {
-            const cached = JSON.parse(cachedRaw) as MmoState;
-            const serverCardIds = new Set(serverState.cards.map((c) => c.id));
-            const missingCustomCards = (cached.cards || []).filter(
-              (c) => !serverCardIds.has(c.id)
+
+        // Check if local IndexedDB has uploaded cards, posts, or player squad data missing on the server
+        if (localPersisted) {
+          const serverCardIds = new Set((serverState.cards || []).map((c) => c.id));
+          const hasMissingCards = (localPersisted.cards || []).some(
+            (c) => !serverCardIds.has(c.id)
+          );
+          const serverPostIds = new Set((serverState.posts || []).map((p) => p.id));
+          const hasMissingPosts = (localPersisted.posts || []).some(
+            (p) => !serverPostIds.has(p.id)
+          );
+          const hasMissingSquad = (localPersisted.players || []).some((lp) => {
+            const sp = (serverState.players || []).find((p) => p.id === lp.id);
+            return (
+              !sp ||
+              (lp.squadCardIds?.length > 0 && (sp.squadCardIds?.length || 0) === 0) ||
+              (lp.xp || 0) > (sp.xp || 0)
             );
-            if (missingCustomCards.length > 0) {
-              serverState.cards = [...missingCustomCards, ...serverState.cards];
+          });
+
+          if (hasMissingCards || hasMissingPosts || hasMissingSquad) {
+            const syncRes = await fetch('/api/mmo/sync', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-player-id': savedPid,
+              },
+              body: JSON.stringify({ state: localPersisted }),
+            });
+            if (syncRes.ok) {
+              const syncData = await syncRes.json();
+              if (syncData.state) {
+                syncState({
+                  ...syncData.state,
+                  sessionUser: syncData.sessionUser,
+                  activePlayerId: syncData.activePlayerId,
+                  accounts: syncData.accounts,
+                });
+                return;
+              }
             }
           }
-        } catch {
-          // Ignore cache parse issues
         }
+
         syncState(serverState);
+      } else if (localPersisted) {
+        syncState(localPersisted);
       }
+    } catch {
+      const fallback = await loadPersistentMmoState();
+      if (fallback) syncState(fallback);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchMmoState();
+    void fetchMmoState();
   }, []);
 
   const player: MmoPlayer | null = useMemo(() => {
     if (!mmoState) return null;
     return (
-      mmoState.players.find((p) => p.id === 'player-arron21') || mmoState.players[0] || null
+      mmoState.players.find((p) => p.id === activePlayerId) ||
+      (sessionUser
+        ? mmoState.players.find(
+            (p) => p.username.toLowerCase() === sessionUser.username.toLowerCase()
+          )
+        : undefined) ||
+      mmoState.players.find((p) => p.id === 'player-arron21') ||
+      mmoState.players[0] ||
+      null
     );
-  }, [mmoState]);
+  }, [mmoState, activePlayerId, sessionUser]);
 
   // Cards owned by the player in their personal Deck/Sanctum (excludes Wild cards)
   const playerCards: MmoCard[] = useMemo(() => {
@@ -279,7 +354,10 @@ export function App() {
 
     const res = await fetch('/api/mmo/battle/record', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-player-id': player?.id || activePlayerId,
+      },
       body: JSON.stringify({
         won: sim.won,
         wildCardIds: enemyUnits.map((u) => u.id),
@@ -315,7 +393,10 @@ export function App() {
 
   // Social Feed Hype Boost
   const handleHypePost = async (postId: string) => {
-    const res = await fetch(`/api/mmo/posts/${postId}/hype`, { method: 'POST' });
+    const res = await fetch(`/api/mmo/posts/${postId}/hype`, {
+      method: 'POST',
+      headers: { 'x-player-id': player?.id || activePlayerId },
+    });
     if (res.ok) {
       const data = await res.json();
       if (data.state) syncState(data.state);
@@ -328,7 +409,10 @@ export function App() {
     try {
       const res = await fetch(`/api/mmo/cards/${cardId}/judge`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-player-id': player?.id || activePlayerId,
+        },
         body: JSON.stringify({ vibe }),
       });
       if (res.ok) {
@@ -358,7 +442,10 @@ export function App() {
 
     const res = await fetch(`/api/mmo/posts/${postId}/comment`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-player-id': player?.id || activePlayerId,
+      },
       body: JSON.stringify({ text }),
     });
     if (res.ok) {
@@ -420,6 +507,7 @@ export function App() {
         formData.append('photos', prepared.uploadFile);
         formData.append('destination', forgeDestination);
         formData.append('shareToFeed', String(forgeShareFeed));
+        formData.append('playerId', player?.id || activePlayerId);
         if (
           forgeDestination === 'deck' &&
           forgeEquipSlot !== 'auto' &&
@@ -448,6 +536,7 @@ export function App() {
 
         const res = await fetch('/api/mmo/forge', {
           method: 'POST',
+          headers: { 'x-player-id': player?.id || activePlayerId },
           body: formData,
         });
         const data = await res.json();
@@ -510,7 +599,10 @@ export function App() {
 
     const res = await fetch('/api/mmo/player/squad', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-player-id': player.id,
+      },
       body: JSON.stringify({ squadCardIds: nextSquad.filter(Boolean) }),
     });
     if (res.ok) {
@@ -524,6 +616,7 @@ export function App() {
   const handleReleaseCardToWild = async (card: MmoCard) => {
     const res = await fetch(`/api/mmo/cards/${card.id}/release-wild`, {
       method: 'POST',
+      headers: { 'x-player-id': player?.id || activePlayerId },
     });
     if (res.ok) {
       const data = await res.json();
@@ -542,7 +635,10 @@ export function App() {
   ) => {
     const res = await fetch(`/api/mmo/cards/${cardId}/upgrade`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-player-id': player?.id || activePlayerId,
+      },
       body: JSON.stringify({ action, sacrificeCardId }),
     });
     const data = await res.json();
@@ -565,7 +661,10 @@ export function App() {
   const handleSwitchFaction = async (faction: FactionId) => {
     const res = await fetch('/api/mmo/player/squad', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-player-id': player?.id || activePlayerId,
+      },
       body: JSON.stringify({ faction }),
     });
     if (res.ok) {
@@ -635,7 +734,7 @@ export function App() {
             <div style={{ minWidth: 0 }}>
               <div className="brand-title">CHROMARIFT</div>
               <div className="brand-subtitle">
-                Squad {playerSquad.length}/{REQUIRED_SQUAD_SIZE} · Wild {wildCards.length}
+                @{player.username} · Squad {playerSquad.length}/{REQUIRED_SQUAD_SIZE}
               </div>
             </div>
           </div>
@@ -679,20 +778,32 @@ export function App() {
             </button>
           </nav>
 
-          {/* Compact Mobile Resource Chips + Shell Toggle */}
+          {/* Compact Mobile Resource Chips + Login/Account Button + Shell Toggle */}
           <div className="hud-resources">
             <div className="resource-pill" title="Lumen Dust (Level Up Cards)">
               <Sparkles size={11} style={{ color: 'var(--gold-bright)' }} />
               <strong>{player.lumenDust}</strong>
             </div>
-            <div className="resource-pill" title="Chromatic Shards (Foil Ascension)">
-              <Flame size={11} style={{ color: 'var(--elem-astral)' }} />
-              <strong style={{ color: 'var(--elem-astral)' }}>{player.chromaticShards}</strong>
-            </div>
             <div className="resource-pill" title="Arena ELO Rating">
               <Trophy size={11} style={{ color: 'var(--gold-primary)' }} />
               <strong>{player.eloRating}</strong>
             </div>
+
+            <button
+              type="button"
+              className="viewport-mode-btn"
+              onClick={() => setAuthModalOpen(true)}
+              title="Log In, Create Account, or Switch Commander Profile"
+              id="hud-auth-account-btn"
+              style={{
+                borderColor: sessionUser ? '#4ade80' : 'var(--gold-bright)',
+                color: sessionUser ? '#4ade80' : 'var(--gold-bright)',
+                fontWeight: 700,
+              }}
+            >
+              {sessionUser ? <User size={12} /> : <LogIn size={12} />}
+              <span>{sessionUser ? `@${player.username}` : 'Log In'}</span>
+            </button>
 
             <button
               type="button"
@@ -2462,6 +2573,8 @@ export function App() {
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '0.5rem',
                 }}
               >
                 <div>
@@ -2476,7 +2589,17 @@ export function App() {
                     @{player.username} · Level {player.level} · Order of {player.faction}
                   </div>
                 </div>
-                <span className="card-power-badge">{player.eloRating} ELO</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <span className="card-power-badge">{player.eloRating} ELO</span>
+                  <button
+                    type="button"
+                    className="btn btn-gold"
+                    onClick={() => setAuthModalOpen(true)}
+                    style={{ minHeight: '34px', padding: '0.3rem 0.65rem', fontSize: '0.72rem' }}
+                  >
+                    <LogIn size={13} /> {sessionUser ? 'Switch / Account' : 'Log In / Sign Up'}
+                  </button>
+                </div>
               </div>
 
               <div
@@ -2847,6 +2970,41 @@ export function App() {
           onClose={() => setActiveSimulation(null)}
         />
       )}
+
+      {/* User Login, Registration & Account Switcher Modal */}
+      <AuthModal
+        isOpen={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+        sessionUser={sessionUser}
+        currentPlayer={player}
+        accounts={accounts}
+        players={mmoState.players}
+        onLoginSuccess={({
+          sessionUser: nextUser,
+          activePlayerId: nextPid,
+          state: nextState,
+          accounts: nextAccounts,
+          message,
+        }) => {
+          setSessionUser(nextUser);
+          if (nextPid) {
+            setActivePlayerId(nextPid);
+            setSavedActivePlayerId(nextPid);
+          }
+          if (Array.isArray(nextAccounts)) {
+            setAccounts(nextAccounts);
+          }
+          if (nextState) {
+            syncState({
+              ...(nextState as MmoState),
+              sessionUser: nextUser,
+              activePlayerId: nextPid || activePlayerId,
+              accounts: nextAccounts || accounts,
+            });
+          }
+          showToast(message);
+        }}
+      />
     </div>
   );
 }
