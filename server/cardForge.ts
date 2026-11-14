@@ -41,6 +41,9 @@ export interface CardAbility {
 }
 
 export interface ForgedCardStats {
+  aiName: string;
+  aiNameAlternatives: string[];
+  aiCaption: string;
   element: ElementType;
   category: PhotoCategory;
   categoryConfidence: number;
@@ -698,7 +701,28 @@ export async function analyzeAndForgeCard(
   const epithets = ELEMENT_EPITHETS[element];
   const epithet = epithets[(r + g + b + width) % epithets.length];
 
+  const aiIdentity = generateAiCardIdentity({
+    element,
+    category,
+    role,
+    rarity,
+    r,
+    g,
+    b,
+    luminance,
+    contrast,
+    saturation,
+    focalMm,
+    fNum,
+    shutterSec,
+    exif,
+    hintText,
+  });
+
   return {
+    aiName: aiIdentity.aiName,
+    aiNameAlternatives: aiIdentity.aiNameAlternatives,
+    aiCaption: aiIdentity.aiCaption,
     element,
     category,
     categoryConfidence,
@@ -724,5 +748,161 @@ export async function analyzeAndForgeCard(
       contrast,
       saturation,
     },
+  };
+}
+
+function extractSemanticFilenameSubject(rawHint: string): string | null {
+  const base = rawHint
+    .replace(/\.[^/.]+$/, '')
+    .replace(/[-_]+/g, ' ')
+    .trim();
+  if (!base) return null;
+
+  const stopTokens = new Set([
+    'img', 'dsc', 'dscf', 'dscn', 'pxl', 'dcim', 'mvi', 'gopr', 'dji', 'sam',
+    'screenshot', 'screen', 'shot', 'photo', 'picture', 'image', 'pic', 'camera',
+    'upload', 'file', 'untitled', 'download', 'whatsapp', 'signal', 'telegram',
+    'copy', 'edit', 'final', 'v1', 'v2', 'new', 'old', 'test', 'temp', 'tmp',
+    'jpeg', 'jpg', 'png', 'webp', 'heic', 'avif', 'raw', 'cr2', 'nef', 'arw',
+    'card', 'the', 'and', 'for', 'with', 'from', 'into',
+  ]);
+
+  const words = base
+    .split(/\s+/)
+    .map((w) => w.replace(/[^a-zA-Z]/g, ''))
+    .filter((w) => w.length >= 3 && w.length <= 14)
+    .filter((w) => !stopTokens.has(w.toLowerCase()))
+    .filter((w) => !/^[a-f0-9]{6,}$/i.test(w));
+
+  if (words.length === 0) return null;
+  const picked = words
+    .slice(0, 2)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+  return picked || null;
+}
+
+export function generateAiCardIdentity(params: {
+  element: ElementType;
+  category: PhotoCategory;
+  role: CardRole;
+  rarity: RarityTier;
+  r: number;
+  g: number;
+  b: number;
+  luminance: number;
+  contrast: number;
+  saturation: number;
+  focalMm: number;
+  fNum: number;
+  shutterSec: number;
+  exif: ExtractedExif;
+  hintText?: string;
+}): { aiName: string; aiNameAlternatives: string[]; aiCaption: string } {
+  const {
+    element,
+    category,
+    role,
+    rarity,
+    r,
+    g,
+    b,
+    luminance,
+    contrast,
+    saturation,
+    focalMm,
+    fNum,
+    shutterSec,
+    exif,
+    hintText = '',
+  } = params;
+
+  const seed = Math.abs(r * 31 + g * 17 + b * 13 + luminance * 7 + contrast * 5 + Math.round(focalMm));
+
+  const elementAdjectives: Record<ElementType, string[]> = {
+    Solar: ['Sunforged', 'Aurelian', 'Gilded', 'Helios', 'Radiant', 'Solstice', 'Amber'],
+    Abyssal: ['Trenchborn', 'Tidal', 'Pelagic', 'Sapphire', 'Riptide', 'Fathom', 'Glacial'],
+    Crimson: ['Bloodmoon', 'Scarlet', 'Emberheart', 'Cinnabar', 'Pyre', 'Vermilion', 'Ignis'],
+    Verdant: ['Sylvan', 'Briar', 'Mossbound', 'Emerald', 'Wildwood', 'Canopy', 'Thorn'],
+    Astral: ['Nebula', 'Starlight', 'Aether', 'Cosmic', 'Voidborn', 'Celestial', 'Zenith'],
+    Monochrome: ['Noir', 'Obsidian', 'Silverplate', 'Phantom', 'Chiaroscuro', 'Ashen', 'Graphite'],
+  };
+
+  const categorySubjects: Record<PhotoCategory, string[]> = {
+    Portrait: ['Sovereign', 'Valkyrie', 'Visage', 'Oracle', 'Duelist', 'Phantom', 'Envoy'],
+    Architecture: ['Citadel', 'Monolith', 'Bastion', 'Obelisk', 'Spire', 'Sanctum', 'Colossus'],
+    Nature: ['Titan', 'Behemoth', 'Grovekeeper', 'Horizon', 'Tempest', 'Wildheart', 'Warden'],
+    'Still Life': ['Reliquary', 'Chalice', 'Artifact', 'Chronicle', 'Talisman', 'Curio', 'Vessel'],
+    'Street & Action': ['Outrider', 'Strider', 'Mirage', 'Drifter', 'Ronin', 'Vortex', 'Interceptor'],
+    'Macro & Wildlife': ['Stalker', 'Mantis', 'Lynx', 'Apex', 'Fangs', 'Chitin', 'Predator'],
+    'Night & Astro': ['Constellation', 'Eclipse', 'Stargazer', 'Comet', 'Pulsar', 'Nocturne', 'Supernova'],
+    'Fine Art & Abstract': ['Paradox', 'Prism', 'Enigma', 'Dreamweaver', 'Tessellation', 'Fracture', 'Chimera'],
+  };
+
+  const lightingDescriptors =
+    luminance < 68
+      ? ['Midnight', 'Shadow', 'Umbral', 'Dusk']
+      : luminance > 180
+      ? ['High-Noon', 'Daybreak', 'Luminous', 'Halo']
+      : contrast > 62
+      ? ['Razor', 'Stark', 'Stormlit', 'Flash']
+      : saturation > 70
+      ? ['Neon', 'Prismatic', 'Chromatic', 'Vivid']
+      : ['Twilight', 'Mist', 'Velvet', 'Haze'];
+
+  const roleTitles: Record<CardRole, string[]> = {
+    Vanguard: ['Bulwark', 'Aegis', 'Sentinel', 'Guardian'],
+    Bruiser: ['Juggernaut', 'Reaver', 'Crusher', 'Ravager'],
+    Striker: ['Blade', 'Harrier', 'Assassin', 'Viper'],
+    Arcanist: ['Weaver', 'Invoker', 'Magus', 'Seer'],
+  };
+
+  const adjPool = elementAdjectives[element];
+  const subjPool = categorySubjects[category];
+  const lightPool = lightingDescriptors;
+  const rolePool = roleTitles[role];
+
+  const adj1 = adjPool[seed % adjPool.length];
+  const adj2 = adjPool[(seed + 3) % adjPool.length];
+  const subj1 = subjPool[(seed + 1) % subjPool.length];
+  const subj2 = subjPool[(seed + 4) % subjPool.length];
+  const light1 = lightPool[seed % lightPool.length];
+  const role1 = rolePool[(seed + 2) % rolePool.length];
+
+  const semanticSubject = extractSemanticFilenameSubject(hintText);
+
+  const candidates = [
+    semanticSubject ? `${adj1} ${semanticSubject}` : `${adj1} ${subj1}`,
+    semanticSubject ? `${light1} ${semanticSubject} ${role1}` : `${light1} ${adj2} ${subj2}`,
+    `${adj2} ${category === 'Architecture' ? 'Bastion' : subj2} of ${light1}`,
+    `${light1} ${role1} · ${adj1}Core`,
+  ];
+
+  const aiName = candidates[0];
+
+  const opticsNote =
+    fNum <= 2.4
+      ? `shallow f/${fNum.toFixed(1)} bokeh isolation`
+      : fNum >= 8
+      ? `deep f/${fNum.toFixed(0)} architectural sharpness`
+      : shutterSec <= 0.001
+      ? `frozen ${exif.shutterSpeed} high-velocity shutter`
+      : `${Math.round(focalMm)}mm optical framing`;
+
+  const toneNote =
+    luminance < 75
+      ? 'low-key nocturnal shadows'
+      : luminance > 175
+      ? 'radiant high-key highlights'
+      : contrast > 60
+      ? 'dramatic chiaroscuro contrast'
+      : 'balanced chromatic harmony';
+
+  const aiCaption = `AI Vision Telemetry: ${rarity} ${element} ${category} (${role}) forged from ${toneNote} and ${opticsNote}. Grants ${PHOTO_CATEGORY_MODIFIERS[category].bonusLabel}.`;
+
+  return {
+    aiName,
+    aiNameAlternatives: candidates,
+    aiCaption,
   };
 }

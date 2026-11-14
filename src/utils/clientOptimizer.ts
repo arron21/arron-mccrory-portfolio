@@ -1,5 +1,34 @@
 import exifr from 'exifr';
-import type { ExifData } from '../types.ts';
+import type { ExifData, ElementType, PhotoCategory, CardRole } from '../types.ts';
+
+export type AiNamingTheme = 'auto' | 'mythic' | 'cyber' | 'primal' | 'arcane';
+
+export interface StagedPhotoAiPreview {
+  fileName: string;
+  fileSize: number;
+  previewUrl: string;
+  width: number;
+  height: number;
+  exif: ExifData;
+  r: number;
+  g: number;
+  b: number;
+  luminance: number;
+  contrast: number;
+  saturation: number;
+  dominantHex: string;
+  paletteHexes: string[];
+  predictedElement: ElementType;
+  predictedCategory: PhotoCategory;
+  predictedRole: CardRole;
+  predictedBonusLabel: string;
+  aiVisualTags: string[];
+  aiName: string;
+  aiNamePool: string[];
+  aiCaption: string;
+  aiCaptionPool: string[];
+  rerollIndex: number;
+}
 
 function formatShutterSpeed(exposureTime?: number): string {
   if (!exposureTime || typeof exposureTime !== 'number' || exposureTime <= 0) return '';
@@ -104,6 +133,457 @@ function canvasToBlob(
   quality: number
 ): Promise<Blob | null> {
   return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
+  return (
+    '#' +
+    [clamp(r), clamp(g), clamp(b)]
+      .map((x) => x.toString(16).padStart(2, '0'))
+      .join('')
+  );
+}
+
+function extractMeaningfulFileHint(fileName: string): string | null {
+  const base = fileName
+    .replace(/\.[^/.]+$/, '')
+    .replace(/[-_]+/g, ' ')
+    .trim();
+  if (!base) return null;
+
+  const stopWords = new Set([
+    'img', 'dsc', 'dscf', 'dscn', 'pxl', 'dcim', 'mvi', 'gopr', 'dji', 'sam',
+    'screenshot', 'screen', 'shot', 'photo', 'picture', 'image', 'pic', 'camera',
+    'upload', 'file', 'untitled', 'download', 'whatsapp', 'signal', 'telegram',
+    'copy', 'edit', 'final', 'v1', 'v2', 'new', 'old', 'test', 'temp', 'tmp',
+    'jpeg', 'jpg', 'png', 'webp', 'heic', 'avif', 'raw', 'cr2', 'nef', 'arw',
+    'card', 'the', 'and', 'for', 'with', 'from', 'into',
+  ]);
+
+  const tokens = base
+    .split(/\s+/)
+    .map((w) => w.replace(/[^a-zA-Z]/g, ''))
+    .filter((w) => w.length >= 3 && w.length <= 14)
+    .filter((w) => !stopWords.has(w.toLowerCase()))
+    .filter((w) => !/^[a-f0-9]{6,}$/i.test(w));
+
+  if (tokens.length === 0) return null;
+  return tokens
+    .slice(0, 2)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
+
+const CATEGORY_BONUS_SUMMARY: Record<PhotoCategory, { role: CardRole; bonus: string }> = {
+  Portrait: { role: 'Striker', bonus: '+8% CRIT · +14% ATK · +8% SPD' },
+  Architecture: { role: 'Vanguard', bonus: '+26% DEF · +18% HP (Fortress)' },
+  Nature: { role: 'Bruiser', bonus: '+22% HP · +12% DEF · +6% ATK' },
+  'Still Life': { role: 'Arcanist', bonus: '+16% ATK · +16% DEF · +4% CRIT' },
+  'Street & Action': { role: 'Striker', bonus: '+20% SPD · +14% ATK · +5% CRIT' },
+  'Macro & Wildlife': { role: 'Striker', bonus: '+20% ATK · +6% CRIT · +8% SPD' },
+  'Night & Astro': { role: 'Arcanist', bonus: '+22% ATK · +6% CRIT · +8% HP' },
+  'Fine Art & Abstract': { role: 'Arcanist', bonus: '+16% ATK · +12% SPD · +5% CRIT' },
+};
+
+export function generateClientAiNamesAndLore(params: {
+  fileName: string;
+  element: ElementType;
+  category: PhotoCategory;
+  role: CardRole;
+  r: number;
+  g: number;
+  b: number;
+  luminance: number;
+  contrast: number;
+  saturation: number;
+  exif: ExifData;
+  theme?: AiNamingTheme;
+}): { aiNamePool: string[]; aiCaptionPool: string[] } {
+  const {
+    fileName,
+    element,
+    category,
+    role,
+    r,
+    g,
+    b,
+    luminance,
+    contrast,
+    saturation,
+    exif,
+    theme = 'auto',
+  } = params;
+
+  const seed = Math.abs(
+    r * 37 + g * 23 + b * 13 + luminance * 11 + contrast * 7 + saturation * 5 + fileName.length * 19
+  );
+  const semanticSubject = extractMeaningfulFileHint(fileName);
+
+  const elementAdjectives: Record<ElementType, string[]> = {
+    Solar: ['Sunforged', 'Aurelian', 'Helios', 'Gilded', 'Solstice', 'Radiant', 'Amber'],
+    Abyssal: ['Trenchborn', 'Pelagic', 'Tidal', 'Sapphire', 'Riptide', 'Fathom', 'Glacial'],
+    Crimson: ['Bloodmoon', 'Scarlet', 'Emberheart', 'Cinnabar', 'Vermilion', 'Pyre', 'Ignis'],
+    Verdant: ['Sylvan', 'Briar', 'Wildwood', 'Emerald', 'Mossbound', 'Canopy', 'Thorn'],
+    Astral: ['Nebula', 'Starlight', 'Celestial', 'Aether', 'Zenith', 'Cosmic', 'Voidborn'],
+    Monochrome: ['Chiaroscuro', 'Obsidian', 'Noir', 'Silverplate', 'Phantom', 'Graphite', 'Ashen'],
+  };
+
+  const categoryNouns: Record<PhotoCategory, string[]> = {
+    Portrait: ['Sovereign', 'Valkyrie', 'Oracle', 'Duelist', 'Visage', 'Envoy', 'Mirage'],
+    Architecture: ['Citadel', 'Monolith', 'Bastion', 'Obelisk', 'Spire', 'Sanctum', 'Colossus'],
+    Nature: ['Titan', 'Grovekeeper', 'Behemoth', 'Warden', 'Tempest', 'Wildheart', 'Horizon'],
+    'Still Life': ['Reliquary', 'Chalice', 'Talisman', 'Artifact', 'Chronicle', 'Vessel', 'Curio'],
+    'Street & Action': ['Outrider', 'Ronin', 'Interceptor', 'Strider', 'Vortex', 'Drifter', 'Phantom'],
+    'Macro & Wildlife': ['Stalker', 'Apex', 'Mantis', 'Lynx', 'Predator', 'Fangs', 'Huntress'],
+    'Night & Astro': ['Eclipse', 'Supernova', 'Stargazer', 'Nocturne', 'Pulsar', 'Constellation', 'Comet'],
+    'Fine Art & Abstract': ['Paradox', 'Prism', 'Enigma', 'Tessellation', 'Dreamweaver', 'Chimera', 'Anomaly'],
+  };
+
+  const lightingPrefixes =
+    luminance < 70
+      ? ['Midnight', 'Umbral', 'Nocturnal', 'Shadow']
+      : luminance > 180
+      ? ['High-Noon', 'Daybreak', 'Luminous', 'Halo']
+      : contrast > 60
+      ? ['Razor', 'Stormlit', 'Stark', 'Flash']
+      : saturation > 68
+      ? ['Prismatic', 'Vivid', 'Neon', 'Chromatic']
+      : ['Twilight', 'Velvet', 'Misty', 'Haze'];
+
+  const adj = elementAdjectives[element];
+  const nouns = categoryNouns[category];
+  const light = lightingPrefixes;
+
+  const a1 = adj[seed % adj.length];
+  const a2 = adj[(seed + 2) % adj.length];
+  const a3 = adj[(seed + 4) % adj.length];
+  const n1 = nouns[seed % nouns.length];
+  const n2 = nouns[(seed + 3) % nouns.length];
+  const n3 = nouns[(seed + 5) % nouns.length];
+  const l1 = light[seed % light.length];
+  const l2 = light[(seed + 2) % light.length];
+
+  let pool: string[] = [];
+
+  if (theme === 'mythic') {
+    pool = [
+      semanticSubject ? `${a1} ${semanticSubject}, the ${n1}` : `${a1} ${n1} of ${l1}`,
+      `${l1} ${a2} ${n2}`,
+      `High ${n3} of the ${a3} Crown`,
+      `${a1} Oathkeeper · ${n1}`,
+      `The ${l2} ${semanticSubject || n2}`,
+      `${a2} Ascendant ${n3}`,
+    ];
+  } else if (theme === 'cyber') {
+    const codeNum = ((seed % 89) + 10).toString();
+    pool = [
+      `NEO-${codeNum} // ${a1} ${semanticSubject || n1}`,
+      `${l1} Protocol: ${n2}.EXE`,
+      `Chroma-Unit ${codeNum} [${element.toUpperCase()}]`,
+      `Cyber-${n1} // ${a2} Lens`,
+      `Optic Zero: ${l2} ${semanticSubject || n3}`,
+      `SYNTH-${a3.toUpperCase()} ${role}`,
+    ];
+  } else if (theme === 'primal') {
+    pool = [
+      `Primeval ${a1} ${semanticSubject || n1}`,
+      `${l1} Fang of the ${a2} Wilds`,
+      `Untamed ${semanticSubject || n2} Behemoth`,
+      `${a3} Storm-${n3}`,
+      `Apex ${l2} ${n1}`,
+      `Wildborn ${a1} ${role}`,
+    ];
+  } else if (theme === 'arcane') {
+    pool = [
+      `Sigil of the ${a1} ${semanticSubject || n1}`,
+      `${l1} Grimoire: ${a2} ${n2}`,
+      `Astral Relic of ${semanticSubject || n3}`,
+      `The ${a3} Alchemy ${n1}`,
+      `Runebound ${l2} ${n2}`,
+      `Aether-Forged ${a1} ${role}`,
+    ];
+  } else {
+    // 'auto' blends the best visual telemetry names
+    pool = [
+      semanticSubject ? `${a1} ${semanticSubject}` : `${a1} ${n1}`,
+      semanticSubject ? `${l1} ${semanticSubject} ${n2}` : `${l1} ${a2} ${n2}`,
+      `${a3} ${n3} of ${l1}`,
+      `NEO-${(seed % 89) + 10} // ${a1} ${n1}`,
+      `Sigil of the ${l2} ${semanticSubject || n2}`,
+      `Apex ${a2} ${role}`,
+    ];
+  }
+
+  const opticsSnippet = [exif.focalLength, exif.aperture, exif.shutterSpeed]
+    .filter(Boolean)
+    .join(' · ') || 'direct optical sensor capture';
+
+  const toneDesc =
+    luminance < 72
+      ? 'deep nocturnal shadow telemetry'
+      : luminance > 175
+      ? 'radiant high-key luminance'
+      : contrast > 58
+      ? 'high-contrast chiaroscuro edges'
+      : 'rich chromatic color harmony';
+
+  const bonusInfo = CATEGORY_BONUS_SUMMARY[category].bonus;
+
+  const captions = [
+    `AI Vision Telemetry: ${element} ${category} (${role}) synthesized from ${toneDesc} [${opticsSnippet}]. Grants ${bonusInfo}.`,
+    `Forged through the Soul-Lens from ${toneDesc}. Its ${element} resonance empowers this ${category} ${role} with ${bonusInfo}.`,
+    `Optical Alchemy Record (${opticsSnippet}): A ${element}-aligned ${category} specimen channeling ${toneDesc} for ${bonusInfo}.`,
+    `Field Note: Captured in ${l1.toLowerCase()} light, this ${element} ${role} converts ${category.toLowerCase()} composition into ${bonusInfo}.`,
+  ];
+
+  return {
+    aiNamePool: pool,
+    aiCaptionPool: captions,
+  };
+}
+
+/**
+ * Performs an instant client-side 48x48 spatial & RGB vision scan on a staged photo
+ * so the user immediately sees AI-generated card names, extracted color swatches,
+ * predicted photography category, elemental affinity, and visual tags before uploading.
+ */
+export async function analyzeStagedPhotoPreview(
+  file: File,
+  theme: AiNamingTheme = 'auto'
+): Promise<StagedPhotoAiPreview> {
+  const previewUrl = URL.createObjectURL(file);
+  const exif = await extractClientExif(file);
+
+  try {
+    const img = await loadImageElement(file);
+    const width = img.naturalWidth || img.width || 1200;
+    const height = img.naturalHeight || img.height || 900;
+
+    const G = 48;
+    const canvas = document.createElement('canvas');
+    canvas.width = G;
+    canvas.height = G;
+    const ctx = canvas.getContext('2d');
+
+    let rSum = 0;
+    let gSum = 0;
+    let bSum = 0;
+    const lums: number[] = [];
+    const quadRGB = [
+      { r: 0, g: 0, b: 0, c: 0 },
+      { r: 0, g: 0, b: 0, c: 0 },
+      { r: 0, g: 0, b: 0, c: 0 },
+      { r: 0, g: 0, b: 0, c: 0 },
+    ];
+
+    let centerSharp = 0;
+    let borderSharp = 0;
+    let centerCount = 0;
+    let borderCount = 0;
+    let orthoEdges = 0;
+    let diagEdges = 0;
+    let skinPixels = 0;
+    let foliagePixels = 0;
+
+    if (ctx) {
+      ctx.drawImage(img, 0, 0, G, G);
+      const data = ctx.getImageData(0, 0, G, G).data;
+      const gray = new Float32Array(G * G);
+
+      for (let y = 0; y < G; y++) {
+        for (let x = 0; x < G; x++) {
+          const idx = (y * G + x) * 4;
+          const pr = data[idx];
+          const pg = data[idx + 1];
+          const pb = data[idx + 2];
+          rSum += pr;
+          gSum += pg;
+          bSum += pb;
+
+          const lum = 0.299 * pr + 0.587 * pg + 0.114 * pb;
+          gray[y * G + x] = lum;
+          lums.push(lum);
+
+          const qIdx = (y < G / 2 ? 0 : 2) + (x < G / 2 ? 0 : 1);
+          quadRGB[qIdx].r += pr;
+          quadRGB[qIdx].g += pg;
+          quadRGB[qIdx].b += pb;
+          quadRGB[qIdx].c += 1;
+
+          if (pr > 95 && pg > 40 && pb > 20 && pr > pg + 12 && pg > pb && pr - pb > 25) {
+            skinPixels++;
+          }
+          if (pg > pr + 8 && pg > pb + 12 && pg > 45) {
+            foliagePixels++;
+          }
+        }
+      }
+
+      for (let y = 1; y < G - 1; y++) {
+        for (let x = 1; x < G - 1; x++) {
+          const gx = Math.abs(gray[y * G + (x + 1)] - gray[y * G + (x - 1)]);
+          const gy = Math.abs(gray[(y + 1) * G + x] - gray[(y - 1) * G + x]);
+          const mag = gx + gy;
+          if (mag > 22) {
+            if (gx > gy * 2.1 || gy > gx * 2.1) orthoEdges++;
+            else diagEdges++;
+          }
+          const inCenter = x >= G * 0.25 && x <= G * 0.75 && y >= G * 0.2 && y <= G * 0.8;
+          if (inCenter) {
+            centerSharp += mag;
+            centerCount++;
+          } else {
+            borderSharp += mag;
+            borderCount++;
+          }
+        }
+      }
+    }
+
+    const totalPx = Math.max(1, lums.length);
+    const r = Math.round(rSum / totalPx) || 110;
+    const g = Math.round(gSum / totalPx) || 110;
+    const b = Math.round(bSum / totalPx) || 110;
+    const luminance = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+
+    let varSum = 0;
+    for (const l of lums) {
+      varSum += (l - luminance) * (l - luminance);
+    }
+    const contrast = Math.round(Math.sqrt(varSum / totalPx));
+    const saturation = Math.max(r, g, b) - Math.min(r, g, b);
+
+    const dominantHex = rgbToHex(r, g, b);
+    const paletteHexes = quadRGB.map((q) =>
+      q.c > 0 ? rgbToHex(q.r / q.c, q.g / q.c, q.b / q.c) : dominantHex
+    );
+
+    // Predict Element
+    let predictedElement: ElementType = 'Astral';
+    if (saturation < 22) predictedElement = 'Monochrome';
+    else if (r >= g && g >= b && r > b + 28 && g > 85) predictedElement = 'Solar';
+    else if (r > g + 22 && r > b + 18) predictedElement = 'Crimson';
+    else if (g >= r && g >= b + 10) predictedElement = 'Verdant';
+    else if (b >= r + 12 && luminance < 135) predictedElement = 'Abyssal';
+    else predictedElement = 'Astral';
+
+    // Predict Category
+    const centerRatio = (centerSharp / Math.max(1, centerCount)) / Math.max(1, borderSharp / Math.max(1, borderCount));
+    const orthoRatio = orthoEdges / Math.max(1, orthoEdges + diagEdges);
+    const skinRatio = skinPixels / totalPx;
+    const foliageRatio = foliagePixels / totalPx;
+    const aspect = width / Math.max(1, height);
+
+    let predictedCategory: PhotoCategory = 'Fine Art & Abstract';
+    if (luminance < 58) {
+      predictedCategory = 'Night & Astro';
+    } else if (foliageRatio > 0.14 || (predictedElement === 'Verdant' && aspect >= 1.15)) {
+      predictedCategory = 'Nature';
+    } else if (orthoRatio > 0.56 && centerRatio < 1.35) {
+      predictedCategory = 'Architecture';
+    } else if (centerRatio > 1.55 && foliageRatio > 0.06) {
+      predictedCategory = 'Macro & Wildlife';
+    } else if ((aspect < 0.92 && skinRatio > 0.05) || (centerRatio > 1.32 && skinRatio > 0.08)) {
+      predictedCategory = 'Portrait';
+    } else if (centerRatio > 1.38 && aspect >= 0.85 && aspect <= 1.35) {
+      predictedCategory = 'Still Life';
+    } else if (contrast > 56) {
+      predictedCategory = 'Street & Action';
+    }
+
+    const predictedRole = CATEGORY_BONUS_SUMMARY[predictedCategory].role;
+    const predictedBonusLabel = CATEGORY_BONUS_SUMMARY[predictedCategory].bonus;
+
+    const aiVisualTags: string[] = [];
+    if (luminance < 68) aiVisualTags.push('🌙 Nocturnal Low-Key');
+    else if (luminance > 175) aiVisualTags.push('☀️ Radiant High-Key');
+    else if (r > b + 30) aiVisualTags.push('🌅 Golden Warmth');
+    else if (b > r + 20) aiVisualTags.push('❄️ Cool Cyan Tone');
+
+    if (centerRatio > 1.35) aiVisualTags.push('🎯 Subject Bokeh Lock');
+    else if (orthoRatio > 0.54) aiVisualTags.push('🏛️ Geometric Lines');
+
+    if (contrast > 60) aiVisualTags.push('⚡ High-Contrast Edge');
+    else if (saturation > 70) aiVisualTags.push('🌈 Hyper-Saturated');
+
+    if (exif.focalLength || exif.aperture) {
+      aiVisualTags.push(`📷 ${[exif.focalLength, exif.aperture].filter(Boolean).join(' ')}`);
+    }
+
+    const { aiNamePool, aiCaptionPool } = generateClientAiNamesAndLore({
+      fileName: file.name,
+      element: predictedElement,
+      category: predictedCategory,
+      role: predictedRole,
+      r,
+      g,
+      b,
+      luminance,
+      contrast,
+      saturation,
+      exif,
+      theme,
+    });
+
+    return {
+      fileName: file.name,
+      fileSize: file.size,
+      previewUrl,
+      width,
+      height,
+      exif,
+      r,
+      g,
+      b,
+      luminance,
+      contrast,
+      saturation,
+      dominantHex,
+      paletteHexes,
+      predictedElement,
+      predictedCategory,
+      predictedRole,
+      predictedBonusLabel,
+      aiVisualTags: aiVisualTags.slice(0, 4),
+      aiName: aiNamePool[0],
+      aiNamePool,
+      aiCaption: aiCaptionPool[0],
+      aiCaptionPool,
+      rerollIndex: 0,
+    };
+  } catch {
+    const fallbackPool = ['Aether Relic', 'Helios Sovereign', 'Obsidian Sentinel', 'Verdant Warden'];
+    const fallbackCaptions = [
+      'AI Vision Telemetry: Synthesized directly from optical sensor frequencies.',
+    ];
+    return {
+      fileName: file.name,
+      fileSize: file.size,
+      previewUrl,
+      width: 1200,
+      height: 900,
+      exif,
+      r: 120,
+      g: 110,
+      b: 140,
+      luminance: 120,
+      contrast: 48,
+      saturation: 35,
+      dominantHex: '#786e8c',
+      paletteHexes: ['#786e8c', '#9a8cb2', '#524866', '#c4b5fd'],
+      predictedElement: 'Astral',
+      predictedCategory: 'Fine Art & Abstract',
+      predictedRole: 'Arcanist',
+      predictedBonusLabel: '+16% ATK · +12% SPD · +5% CRIT',
+      aiVisualTags: ['✨ Optical Resonance'],
+      aiName: fallbackPool[0],
+      aiNamePool: fallbackPool,
+      aiCaption: fallbackCaptions[0],
+      aiCaptionPool: fallbackCaptions,
+      rerollIndex: 0,
+    };
+  }
 }
 
 /**

@@ -24,6 +24,8 @@ import {
   LogIn,
   LogOut,
   Trash2,
+  RefreshCw,
+  Wand2,
 } from 'lucide-react';
 import {
   formatBytes,
@@ -46,7 +48,13 @@ import {
   simulateAutoBattle,
   type AutoBattleSimulation,
 } from './utils/autoBattler.ts';
-import { preparePhotoForUpload } from './utils/clientOptimizer.ts';
+import {
+  preparePhotoForUpload,
+  analyzeStagedPhotoPreview,
+  generateClientAiNamesAndLore,
+  type StagedPhotoAiPreview,
+  type AiNamingTheme,
+} from './utils/clientOptimizer.ts';
 import {
   savePersistentMmoState,
   loadPersistentMmoState,
@@ -110,15 +118,23 @@ export function App() {
   // Social Feed comment inputs
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
 
-  // Soul-Lens Forge Upload state (Supports 1 or multiple photos + Deck vs Wild destination)
+  // Soul-Lens Forge Upload state (Supports 1 or multiple photos + Deck vs Wild destination + AI Auto-Naming)
   const [forgeDestination, setForgeDestination] = useState<'deck' | 'wild'>('deck');
   const [stagedFiles, setStagedFiles] = useState<File[]>([]);
   const [stagedPreviews, setStagedPreviews] = useState<string[]>([]);
+  const [stagedAiPreviews, setStagedAiPreviews] = useState<StagedPhotoAiPreview[]>([]);
+  const [aiNamingTheme, setAiNamingTheme] = useState<AiNamingTheme>('auto');
+  const [analyzingPreview, setAnalyzingPreview] = useState(false);
+  const [dropzoneDragging, setDropzoneDragging] = useState(false);
   const [forgeTitle, setForgeTitle] = useState('');
   const [forgeCaption, setForgeCaption] = useState('');
   const [forgeEquipSlot, setForgeEquipSlot] = useState<string>('auto');
   const [forgeShareFeed, setForgeShareFeed] = useState(true);
   const [forging, setForging] = useState(false);
+  const [forgeStageIndex, setForgeStageIndex] = useState<number>(0);
+  const [forgeProgressPercent, setForgeProgressPercent] = useState<number>(0);
+  const [forgingCurrentPreview, setForgingCurrentPreview] =
+    useState<StagedPhotoAiPreview | null>(null);
   const [forgeStatusText, setForgeStatusText] = useState('');
   const [lastForgedCards, setLastForgedCards] = useState<MmoCard[]>([]);
   const [lastForgedMode, setLastForgedMode] = useState<'deck' | 'wild'>('deck');
@@ -528,23 +544,177 @@ export function App() {
     }
   };
 
-  // Select 1 or multiple files for Soul-Lens Card Forging
-  const handleSelectForgeFiles = (fileList: FileList | File[]) => {
+  // Select 1 or multiple files for Soul-Lens Card Forging + Instant AI Vision Naming
+  const handleSelectForgeFiles = async (fileList: FileList | File[]) => {
     const incoming = Array.from(fileList).slice(0, 10);
     if (incoming.length === 0) return;
 
     stagedPreviews.forEach((url) => URL.revokeObjectURL(url));
+    stagedAiPreviews.forEach((p) => URL.revokeObjectURL(p.previewUrl));
+
     setStagedFiles(incoming);
     setStagedPreviews(incoming.map((f) => URL.createObjectURL(f)));
+    setAnalyzingPreview(true);
 
-    if (incoming.length === 1) {
-      const cleanTitle = incoming[0].name
-        .replace(/\.[^/.]+$/, '')
-        .replace(/[-_]+/g, ' ')
-        .replace(/\b\w/g, (c) => c.toUpperCase());
-      setForgeTitle(cleanTitle || 'Chromatic Relic');
+    try {
+      const analyzed = await Promise.all(
+        incoming.map((f) => analyzeStagedPhotoPreview(f, aiNamingTheme))
+      );
+      setStagedAiPreviews(analyzed);
+      if (analyzed.length > 0) {
+        setForgeTitle(analyzed[0].aiName);
+        setForgeCaption(analyzed[0].aiCaption);
+      }
+      showToast(
+        `✨ AI Vision analyzed ${analyzed.length} photo${
+          analyzed.length > 1 ? 's' : ''
+        } & generated card identity!`
+      );
+    } finally {
+      setAnalyzingPreview(false);
+    }
+  };
+
+  // Switch AI Naming Theme (Auto Vision, Mythic Fantasy, Cyber-Optic, Primal Wild, Arcane Relic)
+  const handleChangeAiNamingTheme = (nextTheme: AiNamingTheme) => {
+    setAiNamingTheme(nextTheme);
+    if (stagedAiPreviews.length === 0) return;
+
+    const updated = stagedAiPreviews.map((prev) => {
+      const { aiNamePool, aiCaptionPool } = generateClientAiNamesAndLore({
+        fileName: prev.fileName,
+        element: prev.predictedElement,
+        category: prev.predictedCategory,
+        role: prev.predictedRole,
+        r: prev.r,
+        g: prev.g,
+        b: prev.b,
+        luminance: prev.luminance,
+        contrast: prev.contrast,
+        saturation: prev.saturation,
+        exif: prev.exif,
+        theme: nextTheme,
+      });
+      return {
+        ...prev,
+        aiNamePool,
+        aiCaptionPool,
+        aiName: aiNamePool[0],
+        aiCaption: aiCaptionPool[0],
+        rerollIndex: 0,
+      };
+    });
+
+    setStagedAiPreviews(updated);
+    if (updated.length > 0) {
+      setForgeTitle(updated[0].aiName);
+      setForgeCaption(updated[0].aiCaption);
+    }
+  };
+
+  // Re-Roll AI Card Name for a single staged photo
+  const handleRerollPhotoAiName = (idx: number) => {
+    setStagedAiPreviews((prev) => {
+      const next = [...prev];
+      const item = next[idx];
+      if (!item) return prev;
+      const nextIdx = (item.rerollIndex + 1) % item.aiNamePool.length;
+      const nextName = item.aiNamePool[nextIdx];
+      next[idx] = {
+        ...item,
+        rerollIndex: nextIdx,
+        aiName: nextName,
+      };
+      if (idx === 0) {
+        setForgeTitle(nextName);
+      }
+      return next;
+    });
+  };
+
+  // Re-Roll AI Lore Caption for a single staged photo
+  const handleRerollPhotoAiLore = (idx: number) => {
+    setStagedAiPreviews((prev) => {
+      const next = [...prev];
+      const item = next[idx];
+      if (!item) return prev;
+      const curIdx = item.aiCaptionPool.indexOf(item.aiCaption);
+      const nextIdx = (curIdx + 1) % item.aiCaptionPool.length;
+      const nextCaption = item.aiCaptionPool[nextIdx];
+      next[idx] = {
+        ...item,
+        aiCaption: nextCaption,
+      };
+      if (idx === 0) {
+        setForgeCaption(nextCaption);
+      }
+      return next;
+    });
+  };
+
+  // Re-Roll All Staged Photos' AI Names & Lore at once
+  const handleRerollAllAiNames = () => {
+    setStagedAiPreviews((prev) => {
+      const next = prev.map((item) => {
+        const nextIdx = (item.rerollIndex + 1) % item.aiNamePool.length;
+        const nextCapIdx =
+          (item.aiCaptionPool.indexOf(item.aiCaption) + 1) % item.aiCaptionPool.length;
+        return {
+          ...item,
+          rerollIndex: nextIdx,
+          aiName: item.aiNamePool[nextIdx],
+          aiCaption: item.aiCaptionPool[nextCapIdx],
+        };
+      });
+      if (next.length > 0) {
+        setForgeTitle(next[0].aiName);
+        setForgeCaption(next[0].aiCaption);
+      }
+      return next;
+    });
+    showToast('🎲 Re-rolled AI Vision Card Names & Lore!');
+  };
+
+  // Edit a specific staged photo's AI Card Name
+  const handleUpdateStagedPhotoName = (idx: number, newName: string) => {
+    setStagedAiPreviews((prev) => {
+      const next = [...prev];
+      if (!next[idx]) return prev;
+      next[idx] = { ...next[idx], aiName: newName };
+      return next;
+    });
+    if (idx === 0) {
+      setForgeTitle(newName);
+    }
+  };
+
+  // Edit a specific staged photo's AI Lore Caption
+  const handleUpdateStagedPhotoCaption = (idx: number, newCaption: string) => {
+    setStagedAiPreviews((prev) => {
+      const next = [...prev];
+      if (!next[idx]) return prev;
+      next[idx] = { ...next[idx], aiCaption: newCaption };
+      return next;
+    });
+    if (idx === 0) {
+      setForgeCaption(newCaption);
+    }
+  };
+
+  // Remove a single photo from staging
+  const handleRemoveStagedPhoto = (idx: number) => {
+    const nextFiles = stagedFiles.filter((_, i) => i !== idx);
+    const nextPreviews = stagedPreviews.filter((_, i) => i !== idx);
+    const nextAi = stagedAiPreviews.filter((_, i) => i !== idx);
+    setStagedFiles(nextFiles);
+    setStagedPreviews(nextPreviews);
+    setStagedAiPreviews(nextAi);
+    if (nextAi.length > 0) {
+      setForgeTitle(nextAi[0].aiName);
+      setForgeCaption(nextAi[0].aiCaption);
     } else {
       setForgeTitle('');
+      setForgeCaption('');
     }
   };
 
@@ -554,26 +724,73 @@ export function App() {
     if (stagedFiles.length === 0) return;
 
     setForging(true);
+    setForgeStageIndex(0);
+    setForgeProgressPercent(10);
     setLastForgedCards([]);
     setLastForgedMode(forgeDestination);
 
     const allCreatedCards: MmoCard[] = [];
     let latestState: MmoState | null = null;
+    const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
     try {
       for (let i = 0; i < stagedFiles.length; i++) {
         const file = stagedFiles[i];
+        const aiMeta = stagedAiPreviews[i] || null;
+        setForgingCurrentPreview(aiMeta);
+
+        const baseProgress = Math.round((i / stagedFiles.length) * 100);
+        const stepSpan = Math.round(100 / stagedFiles.length);
+
+        // Stage 1: Optical EXIF & WebP Compression
+        setForgeStageIndex(0);
+        setForgeProgressPercent(Math.min(96, baseProgress + Math.round(stepSpan * 0.2)));
         setForgeStatusText(
-          `[${i + 1}/${stagedFiles.length}] Extracting EXIF & optimizing ${file.name} (<2.8 MB)...`
+          `[${i + 1}/${stagedFiles.length}] Stage 1/4: Extracting EXIF & WebP Master Optimization...`
         );
 
         const prepared = await preparePhotoForUpload(file);
         const fname = prepared.uploadFile.name;
+        await pause(220);
+
+        // Stage 2: 64x64 Spatial Vision & Photography Genre Classification
+        setForgeStageIndex(1);
+        setForgeProgressPercent(Math.min(96, baseProgress + Math.round(stepSpan * 0.45)));
+        setForgeStatusText(
+          `[${i + 1}/${stagedFiles.length}] Stage 2/4: Scanning 64×64 Spatial Vision (${
+            aiMeta?.predictedCategory || 'Genre'
+          })...`
+        );
+        await pause(240);
+
+        // Stage 3: RGB Chromatic Spectrum & Elemental Resonance
+        setForgeStageIndex(2);
+        setForgeProgressPercent(Math.min(96, baseProgress + Math.round(stepSpan * 0.7)));
+        setForgeStatusText(
+          `[${i + 1}/${stagedFiles.length}] Stage 3/4: Synthesizing ${
+            aiMeta?.predictedElement || 'Chromatic'
+          } Elemental Resonance...`
+        );
+        await pause(220);
+
+        // Stage 4: AI Card Naming & Combat Stat Binding
+        setForgeStageIndex(3);
+        setForgeProgressPercent(Math.min(98, baseProgress + Math.round(stepSpan * 0.9)));
+        const resolvedTitle = (
+          aiMeta?.aiName?.trim() ||
+          (i === 0 ? forgeTitle.trim() : '') ||
+          ''
+        ).trim();
+        const resolvedCaption = (
+          aiMeta?.aiCaption?.trim() ||
+          (i === 0 ? forgeCaption.trim() : '') ||
+          ''
+        ).trim();
 
         setForgeStatusText(
-          `[${i + 1}/${stagedFiles.length}] Analyzing RGB spectrum & forging ${
-            forgeDestination === 'wild' ? 'Wild Specimen' : 'Deck Card'
-          }...`
+          `[${i + 1}/${stagedFiles.length}] Stage 4/4: Binding "${
+            resolvedTitle || 'AI Relic'
+          }" into ${forgeDestination === 'wild' ? 'The Wilds' : 'Your Deck'}...`
         );
 
         const formData = new FormData();
@@ -589,17 +806,11 @@ export function App() {
           formData.append('equipSlot', forgeEquipSlot);
         }
 
-        const singleTitle =
-          stagedFiles.length === 1 && forgeTitle.trim()
-            ? forgeTitle.trim()
-            : file.name
-                .replace(/\.[^/.]+$/, '')
-                .replace(/[-_]+/g, ' ')
-                .replace(/\b\w/g, (c) => c.toUpperCase());
-
-        formData.append('titles', JSON.stringify({ [fname]: singleTitle }));
-        if (forgeCaption.trim()) {
-          formData.append('captions', JSON.stringify({ [fname]: forgeCaption.trim() }));
+        if (resolvedTitle) {
+          formData.append('titles', JSON.stringify({ [fname]: resolvedTitle }));
+        }
+        if (resolvedCaption) {
+          formData.append('captions', JSON.stringify({ [fname]: resolvedCaption }));
         }
         formData.append(
           'clientOriginalSizes',
@@ -626,6 +837,9 @@ export function App() {
         }
       }
 
+      setForgeProgressPercent(100);
+      await pause(180);
+
       if (latestState) {
         syncState(latestState);
       }
@@ -633,22 +847,24 @@ export function App() {
       if (allCreatedCards.length > 0) {
         setLastForgedCards(allCreatedCards);
         stagedPreviews.forEach((url) => URL.revokeObjectURL(url));
+        stagedAiPreviews.forEach((p) => URL.revokeObjectURL(p.previewUrl));
         setStagedFiles([]);
         setStagedPreviews([]);
+        setStagedAiPreviews([]);
         setForgeCaption('');
 
         const first = allCreatedCards[0];
         if (forgeDestination === 'wild') {
           showToast(
             allCreatedCards.length === 1
-              ? `🐾 [${first.category}] ${first.title} (${first.categoryBonusLabel}) sent to the Wild Rift!`
-              : `🐾 Classified & released ${allCreatedCards.length} Photo-Cards into the Wild Rift!`
+              ? `🐾 [${first.category}] "${first.title}" (${first.categoryBonusLabel}) sent to the Wild Rift!`
+              : `🐾 Classified & released ${allCreatedCards.length} AI-Named Photo-Cards into the Wild Rift!`
           );
         } else {
           showToast(
             allCreatedCards.length === 1
-              ? `🛡️ [${first.category}] ${first.title} (${first.categoryBonusLabel}) bound to @${player?.username}'s Deck!`
-              : `🛡️ Classified & bound ${allCreatedCards.length} Photo-Cards to @${player?.username}'s Deck!`
+              ? `🛡️ [${first.category}] "${first.title}" (${first.categoryBonusLabel}) bound to @${player?.username}'s Deck!`
+              : `🛡️ Classified & bound ${allCreatedCards.length} AI-Named Photo-Cards to @${player?.username}'s Deck!`
           );
         }
       }
@@ -656,6 +872,7 @@ export function App() {
       showToast('Network error during Soul-Lens Forging.');
     } finally {
       setForging(false);
+      setForgingCurrentPreview(null);
       setForgeStatusText('');
     }
   };
@@ -1765,25 +1982,25 @@ export function App() {
               </button>
             </div>
 
-            {/* Dual Mobile Camera + Multi-Photo Gallery Dropzone */}
+            {/* Dual Mobile Camera + Multi-Photo Gallery Portal Dropzone */}
             <div
               onClick={() => fileInputRef.current?.click()}
-              onDragOver={(e) => e.preventDefault()}
+              onDragOver={(e) => {
+                e.preventDefault();
+                if (!dropzoneDragging) setDropzoneDragging(true);
+              }}
+              onDragLeave={() => setDropzoneDragging(false)}
               onDrop={(e) => {
                 e.preventDefault();
+                setDropzoneDragging(false);
                 if (e.dataTransfer.files?.length) {
-                  handleSelectForgeFiles(e.dataTransfer.files);
+                  void handleSelectForgeFiles(e.dataTransfer.files);
                 }
               }}
+              className={`forge-dropzone-portal ${dropzoneDragging ? 'dragging' : ''}`}
               style={{
-                border: `1.5px dashed ${
-                  forgeDestination === 'wild' ? '#4ade80' : 'var(--border-gold)'
-                }`,
-                background: 'var(--bg-elevated)',
-                borderRadius: 'var(--radius-lg)',
-                padding: '1.35rem 1rem',
-                textAlign: 'center',
-                cursor: 'pointer',
+                borderColor:
+                  forgeDestination === 'wild' ? '#4ade80' : 'var(--border-gold)',
               }}
               id="soul-lens-dropzone"
             >
@@ -1796,7 +2013,7 @@ export function App() {
                 style={{ display: 'none' }}
                 onChange={(e) => {
                   if (e.target.files?.length) {
-                    handleSelectForgeFiles(e.target.files);
+                    void handleSelectForgeFiles(e.target.files);
                   }
                   e.target.value = '';
                 }}
@@ -1811,34 +2028,57 @@ export function App() {
                 style={{ display: 'none' }}
                 onChange={(e) => {
                   if (e.target.files?.length) {
-                    handleSelectForgeFiles(e.target.files);
+                    void handleSelectForgeFiles(e.target.files);
                   }
                   e.target.value = '';
                 }}
               />
 
-              <UploadCloud
-                size={30}
-                style={{
-                  color: forgeDestination === 'wild' ? '#4ade80' : 'var(--gold-bright)',
-                  marginBottom: '0.35rem',
-                }}
-              />
-              <div style={{ fontFamily: 'var(--font-display)', fontSize: '1.08rem' }}>
+              <div className="forge-aperture-ring">
+                <UploadCloud
+                  size={28}
+                  style={{
+                    color: forgeDestination === 'wild' ? '#4ade80' : 'var(--gold-bright)',
+                  }}
+                />
+              </div>
+
+              <div style={{ fontFamily: 'var(--font-display)', fontSize: '1.14rem', fontWeight: 700 }}>
                 {forgeDestination === 'wild'
-                  ? 'Select Photo(s) to Analyze Stats & Release to the Wild'
-                  : `Select Photo(s) to Forge into Your Deck (${playerSquad.length}/4 Squad)`}
+                  ? 'Drop or Select Photo(s) to AI-Name & Release to the Wild'
+                  : `Drop or Select Photo(s) to AI-Forge into Your Deck (${playerSquad.length}/4 Squad)`}
               </div>
               <div
                 style={{
                   fontFamily: 'var(--font-mono)',
-                  fontSize: '0.62rem',
-                  color: 'var(--text-muted)',
-                  marginTop: '0.2rem',
-                  marginBottom: '0.85rem',
+                  fontSize: '0.64rem',
+                  color: 'var(--text-secondary)',
+                  marginTop: '0.25rem',
+                  marginBottom: '0.65rem',
                 }}
               >
-                Supports 1 or multiple photos at once · Auto WebP/AVIF Optimization
+                ✨ Instant AI Vision Auto-Naming · 🎨 Live RGB Palette · 📷 EXIF & Genre Detection
+              </div>
+
+              {/* Fun Feature Badges */}
+              <div
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  justifyContent: 'center',
+                  gap: '0.35rem',
+                  marginBottom: '0.9rem',
+                }}
+              >
+                <span className="card-pill" style={{ borderColor: 'rgba(214,168,90,0.4)', color: 'var(--gold-bright)' }}>
+                  <Wand2 size={11} /> AI Card Name & Lore
+                </span>
+                <span className="card-pill" style={{ borderColor: 'rgba(56,189,248,0.4)', color: '#38bdf8' }}>
+                  🔬 64×64 Spatial Vision
+                </span>
+                <span className="card-pill" style={{ borderColor: 'rgba(74,222,128,0.4)', color: '#4ade80' }}>
+                  ⚡ Auto WebP (&lt;2.8 MB)
+                </span>
               </div>
 
               <div
@@ -1866,8 +2106,180 @@ export function App() {
               </div>
             </div>
 
-            {/* Staged Photo(s) Configuration Form */}
-            {stagedFiles.length > 0 && (
+            {/* Instant Client-Side Vision Scanning Indicator */}
+            {analyzingPreview && (
+              <div className="forge-ritual-chamber" style={{ textAlign: 'center', padding: '1rem' }}>
+                <div
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.74rem',
+                    color: 'var(--gold-bright)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '0.45rem',
+                  }}
+                >
+                  <Sparkles size={15} /> Scanning RGB Spectrum, EXIF Optics & Synthesizing AI Card Names...
+                </div>
+                <div className="forge-progress-track">
+                  <div className="forge-progress-fill" style={{ width: '75%' }} />
+                </div>
+              </div>
+            )}
+
+            {/* Animated 4-Stage Soul-Lens Optical Alchemy Forging Ritual (When Forging is Active) */}
+            {forging && (
+              <div className="forge-ritual-chamber" id="forge-loading-ritual">
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <div>
+                    <div
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '0.64rem',
+                        color: 'var(--gold-bright)',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.08em',
+                      }}
+                    >
+                      ⚡ Soul-Lens Optical Alchemy in Progress
+                    </div>
+                    <div
+                      style={{
+                        fontFamily: 'var(--font-display)',
+                        fontSize: '1.12rem',
+                        fontWeight: 700,
+                      }}
+                    >
+                      {forgingCurrentPreview
+                        ? `Forging "${forgingCurrentPreview.aiName}"`
+                        : 'Synthesizing Chromatic Combat Card...'}
+                    </div>
+                  </div>
+                  <span
+                    className="card-power-badge"
+                    style={{ fontSize: '0.82rem', padding: '0.28rem 0.6rem' }}
+                  >
+                    {forgeProgressPercent}%
+                  </span>
+                </div>
+
+                {/* Live Laser-Scanned Thumbnail + Extracted Palette during Forging */}
+                {forgingCurrentPreview && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.75rem',
+                      background: 'rgba(0,0,0,0.4)',
+                      padding: '0.6rem',
+                      borderRadius: '10px',
+                      border: '1px solid rgba(255,255,255,0.1)',
+                    }}
+                  >
+                    <div className="staged-thumb-scanner" style={{ width: '74px', height: '74px' }}>
+                      <img
+                        src={forgingCurrentPreview.previewUrl}
+                        alt={forgingCurrentPreview.aiName}
+                      />
+                      <div className="laser-scan-line" />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                      <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+                        <span className="card-pill" style={{ color: 'var(--gold-bright)' }}>
+                          ✦ {forgingCurrentPreview.predictedElement}
+                        </span>
+                        <span className="card-pill" style={{ color: '#38bdf8' }}>
+                          📸 {forgingCurrentPreview.predictedCategory}
+                        </span>
+                        <span className="card-pill" style={{ color: '#4ade80' }}>
+                          ⚔ {forgingCurrentPreview.predictedRole}
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          display: 'flex',
+                          height: '8px',
+                          borderRadius: '999px',
+                          overflow: 'hidden',
+                          border: '1px solid rgba(255,255,255,0.15)',
+                        }}
+                      >
+                        {forgingCurrentPreview.paletteHexes.map((hex, i) => (
+                          <div key={`${hex}-${i}`} style={{ flex: 1, background: hex }} />
+                        ))}
+                      </div>
+                      <div
+                        style={{
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: '0.64rem',
+                          color: 'var(--text-secondary)',
+                        }}
+                      >
+                        {forgeStatusText}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Shimmering Progress Bar */}
+                <div className="forge-progress-track">
+                  <div
+                    className="forge-progress-fill"
+                    style={{ width: `${forgeProgressPercent}%` }}
+                  />
+                </div>
+
+                {/* 4-Stage Telemetry Stepper */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.38rem' }}>
+                  {[
+                    {
+                      idx: 0,
+                      label: 'Stage 1: Optical EXIF Extraction & WebP Master Optimization (<2.8 MB)',
+                    },
+                    {
+                      idx: 1,
+                      label: 'Stage 2: 64×64 Spatial Vision & Photography Genre Classification',
+                    },
+                    {
+                      idx: 2,
+                      label: 'Stage 3: RGB Chromatic Spectrum & Elemental Affinity Synthesis',
+                    },
+                    {
+                      idx: 3,
+                      label: 'Stage 4: AI Card Identity, Lore & Combat Stat Binding',
+                    },
+                  ].map((step) => {
+                    const isDone = forgeStageIndex > step.idx;
+                    const isActive = forgeStageIndex === step.idx;
+                    return (
+                      <div
+                        key={step.idx}
+                        className={`forge-step-item ${
+                          isActive ? 'active' : isDone ? 'done' : ''
+                        }`}
+                      >
+                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>
+                          {isDone ? '✓' : isActive ? '◉' : '○'}
+                        </span>
+                        <span>{step.label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Staged Photo(s) AI Vision Pre-Forge Studio */}
+            {stagedFiles.length > 0 && !forging && (
               <form
                 onSubmit={handleForgeSubmit}
                 style={{
@@ -1879,109 +2291,367 @@ export function App() {
                   padding: '1rem',
                   display: 'flex',
                   flexDirection: 'column',
-                  gap: '0.85rem',
+                  gap: '0.9rem',
                 }}
               >
                 <div
                   style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: '0.66rem',
-                    color: forgeDestination === 'wild' ? '#4ade80' : 'var(--gold-bright)',
-                    textTransform: 'uppercase',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: '0.5rem',
                   }}
                 >
-                  {stagedFiles.length} Photo{stagedFiles.length > 1 ? 's' : ''} Staged →{' '}
-                  {forgeDestination === 'wild'
-                    ? '🐾 Release to the Wild (Not Saved to Deck)'
-                    : '🛡️ Bind to My Deck & Squad'}
-                </div>
-
-                {/* Preview Strip */}
-                <div className="h-scroll-strip">
-                  {stagedPreviews.map((src, idx) => (
-                    <div
-                      key={src}
-                      style={{
-                        position: 'relative',
-                        flex: '0 0 auto',
-                        width: stagedPreviews.length === 1 ? '100%' : '135px',
-                      }}
-                    >
-                      <img
-                        src={src}
-                        alt={`Staged ${idx + 1}`}
-                        style={{
-                          width: '100%',
-                          aspectRatio: '4 / 3',
-                          objectFit: 'cover',
-                          borderRadius: 'var(--radius-sm)',
-                          border: '1px solid var(--border-subtle)',
-                        }}
-                      />
-                      <span
-                        className="card-pill"
-                        style={{
-                          position: 'absolute',
-                          bottom: '0.35rem',
-                          right: '0.35rem',
-                          fontSize: '0.56rem',
-                        }}
-                      >
-                        {formatBytes(stagedFiles[idx]?.size || 0)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-
-                {stagedFiles.length === 1 && (
-                  <div>
-                    <label
-                      style={{
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: '0.65rem',
-                        textTransform: 'uppercase',
-                        color: 'var(--text-secondary)',
-                        display: 'block',
-                        marginBottom: '0.25rem',
-                      }}
-                    >
-                      Card Name
-                    </label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      value={forgeTitle}
-                      onChange={(e) => setForgeTitle(e.target.value)}
-                      required
-                      id="forge-card-title-input"
-                    />
-                  </div>
-                )}
-
-                <div>
-                  <label
+                  <div
                     style={{
                       fontFamily: 'var(--font-mono)',
-                      fontSize: '0.65rem',
+                      fontSize: '0.68rem',
+                      color: forgeDestination === 'wild' ? '#4ade80' : 'var(--gold-bright)',
                       textTransform: 'uppercase',
-                      color: 'var(--text-secondary)',
-                      display: 'block',
-                      marginBottom: '0.25rem',
+                      fontWeight: 700,
                     }}
                   >
-                    Caption / Field Note (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder={
-                      forgeDestination === 'wild'
-                        ? 'Notes on this wild photo specimen...'
-                        : 'Describe your shot or squad role...'
-                    }
-                    value={forgeCaption}
-                    onChange={(e) => setForgeCaption(e.target.value)}
-                  />
+                    ✨ {stagedFiles.length} Photo{stagedFiles.length > 1 ? 's' : ''} Analyzed by AI Vision →{' '}
+                    {forgeDestination === 'wild'
+                      ? '🐾 Release to the Wild'
+                      : '🛡️ Bind to My Deck'}
+                  </div>
+
+                  <button
+                    type="button"
+                    className="btn btn-surface"
+                    style={{
+                      minHeight: '30px',
+                      padding: '0.25rem 0.6rem',
+                      fontSize: '0.68rem',
+                      borderColor: 'var(--border-gold)',
+                      color: 'var(--gold-bright)',
+                    }}
+                    onClick={handleRerollAllAiNames}
+                    id="reroll-all-ai-names-btn"
+                  >
+                    <RefreshCw size={12} /> 🎲 Re-Roll All AI Names
+                  </button>
+                </div>
+
+                {/* AI Naming Theme Vibe Bar */}
+                <div
+                  style={{
+                    background: 'var(--bg-surface)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '0.6rem 0.7rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.4rem',
+                  }}
+                >
+                  <div
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.62rem',
+                      color: 'var(--text-secondary)',
+                      textTransform: 'uppercase',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.35rem',
+                    }}
+                  >
+                    <Wand2 size={12} style={{ color: 'var(--gold-bright)' }} /> AI Card Naming Style Vibe:
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
+                    {(
+                      [
+                        { id: 'auto', label: '✨ Auto Vision AI' },
+                        { id: 'mythic', label: '👑 Mythic Fantasy' },
+                        { id: 'cyber', label: '⚡ Cyber-Optic' },
+                        { id: 'primal', label: '🌿 Primal Wild' },
+                        { id: 'arcane', label: '🔮 Arcane Relic' },
+                      ] as { id: AiNamingTheme; label: string }[]
+                    ).map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        className={`ai-theme-pill ${aiNamingTheme === t.id ? 'active' : ''}`}
+                        onClick={() => handleChangeAiNamingTheme(t.id)}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Per-Photo Pre-Forge AI Telemetry & Naming Cards */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                  {stagedAiPreviews.map((meta, idx) => (
+                    <div key={`${meta.fileName}-${idx}`} className="staged-ai-card">
+                      {/* Top Row: Laser-Scanned Thumbnail + Detected Telemetry + Remove Button */}
+                      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
+                        <div className="staged-thumb-scanner">
+                          <img src={meta.previewUrl} alt={meta.aiName} />
+                          <div className="laser-scan-line" />
+                          <span
+                            className="card-pill"
+                            style={{
+                              position: 'absolute',
+                              bottom: '0.25rem',
+                              right: '0.25rem',
+                              fontSize: '0.52rem',
+                              padding: '0.12rem 0.35rem',
+                            }}
+                          >
+                            {formatBytes(meta.fileSize)}
+                          </span>
+                        </div>
+
+                        <div
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '0.35rem',
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              gap: '0.35rem',
+                            }}
+                          >
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
+                              <span
+                                className="card-pill"
+                                style={{
+                                  borderColor: 'var(--border-gold)',
+                                  color: 'var(--gold-bright)',
+                                }}
+                              >
+                                ✦ {meta.predictedElement}
+                              </span>
+                              <span
+                                className="card-pill"
+                                style={{
+                                  borderColor: 'rgba(56,189,248,0.45)',
+                                  color: '#38bdf8',
+                                }}
+                              >
+                                📸 {meta.predictedCategory}
+                              </span>
+                              <span
+                                className="card-pill"
+                                style={{
+                                  borderColor: 'rgba(192,132,252,0.45)',
+                                  color: '#c084fc',
+                                }}
+                              >
+                                ⚔ {meta.predictedRole}
+                              </span>
+                            </div>
+
+                            {stagedFiles.length > 1 && (
+                              <button
+                                type="button"
+                                className="btn btn-surface"
+                                style={{
+                                  minHeight: '26px',
+                                  padding: '0.15rem 0.45rem',
+                                  fontSize: '0.65rem',
+                                  color: '#f87171',
+                                }}
+                                onClick={() => handleRemoveStagedPhoto(idx)}
+                                title="Remove photo"
+                              >
+                                ×
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Predicted Category Combat Bonus */}
+                          <div
+                            style={{
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: '0.62rem',
+                              color: '#4ade80',
+                              fontWeight: 600,
+                            }}
+                          >
+                            Genre Bonus: {meta.predictedBonusLabel}
+                          </div>
+
+                          {/* 4-Quadrant Extracted RGB Color Swatch Strip */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                            <div
+                              style={{
+                                flex: 1,
+                                display: 'flex',
+                                height: '10px',
+                                borderRadius: '999px',
+                                overflow: 'hidden',
+                                border: '1px solid rgba(255,255,255,0.18)',
+                              }}
+                              title={`RGB(${meta.r}, ${meta.g}, ${meta.b}) · Lum ${meta.luminance}`}
+                            >
+                              {meta.paletteHexes.map((hex, swIdx) => (
+                                <div
+                                  key={`${hex}-${swIdx}`}
+                                  style={{ flex: 1, background: hex }}
+                                />
+                              ))}
+                            </div>
+                            <span
+                              style={{
+                                fontFamily: 'var(--font-mono)',
+                                fontSize: '0.58rem',
+                                color: 'var(--text-muted)',
+                              }}
+                            >
+                              {meta.width}×{meta.height}
+                            </span>
+                          </div>
+
+                          {/* Visual AI Telemetry Tags */}
+                          {meta.aiVisualTags.length > 0 && (
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.28rem' }}>
+                              {meta.aiVisualTags.map((tag) => (
+                                <span
+                                  key={tag}
+                                  style={{
+                                    fontFamily: 'var(--font-mono)',
+                                    fontSize: '0.58rem',
+                                    padding: '0.1rem 0.4rem',
+                                    borderRadius: '4px',
+                                    background: 'rgba(255,255,255,0.04)',
+                                    color: 'var(--text-secondary)',
+                                  }}
+                                >
+                                  {tag}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* AI Auto-Generated Card Name Input + 1-Tap Re-Roll + Suggestion Chips */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            gap: '0.4rem',
+                          }}
+                        >
+                          <label
+                            style={{
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: '0.63rem',
+                              textTransform: 'uppercase',
+                              color: 'var(--gold-bright)',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '0.3rem',
+                            }}
+                          >
+                            <Sparkles size={11} /> AI-Generated Card Name (Editable)
+                          </label>
+                          <button
+                            type="button"
+                            className="btn btn-surface"
+                            style={{
+                              minHeight: '26px',
+                              padding: '0.16rem 0.52rem',
+                              fontSize: '0.64rem',
+                              borderColor: 'var(--border-gold)',
+                              color: 'var(--gold-bright)',
+                            }}
+                            onClick={() => handleRerollPhotoAiName(idx)}
+                            id={idx === 0 ? 'reroll-ai-name-btn' : undefined}
+                          >
+                            <RefreshCw size={11} /> ✨ Re-Roll Name
+                          </button>
+                        </div>
+
+                        <input
+                          type="text"
+                          className="form-input"
+                          value={meta.aiName}
+                          onChange={(e) => handleUpdateStagedPhotoName(idx, e.target.value)}
+                          required
+                          id={idx === 0 ? 'forge-card-title-input' : undefined}
+                        />
+
+                        {/* Clickable AI Name Suggestion Chips */}
+                        <div
+                          style={{
+                            display: 'flex',
+                            gap: '0.3rem',
+                            overflowX: 'auto',
+                            paddingBottom: '0.15rem',
+                          }}
+                        >
+                          {meta.aiNamePool.map((candidate) => (
+                            <button
+                              key={candidate}
+                              type="button"
+                              className={`ai-suggestion-chip ${
+                                meta.aiName === candidate ? 'selected' : ''
+                              }`}
+                              onClick={() => handleUpdateStagedPhotoName(idx, candidate)}
+                            >
+                              ✦ {candidate}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* AI Auto-Generated Lore / Field Note Input + Re-Roll */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.28rem' }}>
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            gap: '0.4rem',
+                          }}
+                        >
+                          <label
+                            style={{
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: '0.62rem',
+                              textTransform: 'uppercase',
+                              color: 'var(--text-secondary)',
+                            }}
+                          >
+                            AI Field Note & Lore Caption
+                          </label>
+                          <button
+                            type="button"
+                            className="btn btn-surface"
+                            style={{
+                              minHeight: '24px',
+                              padding: '0.12rem 0.45rem',
+                              fontSize: '0.6rem',
+                            }}
+                            onClick={() => handleRerollPhotoAiLore(idx)}
+                          >
+                            <RefreshCw size={10} /> ✨ Re-Roll Lore
+                          </button>
+                        </div>
+                        <input
+                          type="text"
+                          className="form-input"
+                          style={{ fontSize: '14px', padding: '0.5rem 0.7rem' }}
+                          value={meta.aiCaption}
+                          onChange={(e) => handleUpdateStagedPhotoCaption(idx, e.target.value)}
+                        />
+                      </div>
+                    </div>
+                  ))}
                 </div>
 
                 {/* Squad Slot Picker (Only when saving to Deck) */}
@@ -2057,30 +2727,28 @@ export function App() {
                   className={forgeDestination === 'wild' ? 'btn btn-crimson' : 'btn btn-gold'}
                   disabled={forging}
                   id="submit-forge-card-btn"
-                  style={{ width: '100%', padding: '0.8rem' }}
+                  style={{ width: '100%', padding: '0.85rem', fontSize: '0.92rem' }}
                 >
                   <Sparkles size={16} />
                   <span>
-                    {forging
-                      ? forgeStatusText || 'Forging Photo Stats...'
-                      : forgeDestination === 'wild'
-                      ? `Analyze Stats & Send ${stagedFiles.length} Photo${
+                    {forgeDestination === 'wild'
+                      ? `⚡ Forge & Release ${stagedFiles.length} AI-Named Photo${
                           stagedFiles.length > 1 ? 's' : ''
                         } to the Wild`
-                      : `Forge ${stagedFiles.length} Photo${
+                      : `⚡ Forge ${stagedFiles.length} AI-Named Photo${
                           stagedFiles.length > 1 ? 's' : ''
-                        } to My Deck`}
+                        } into My Deck`}
                   </span>
                 </button>
               </form>
             )}
 
-            {/* Newly Forged Card(s) Stat Reveal Showcase */}
+            {/* Newly Forged Card(s) Celebratory Stat Reveal Showcase */}
             {lastForgedCards.length > 0 && (
               <div
                 style={{
                   background: 'var(--bg-elevated)',
-                  border: `1px solid ${
+                  border: `1.5px solid ${
                     lastForgedMode === 'wild' ? '#4ade80' : 'var(--gold-bright)'
                   }`,
                   borderRadius: 'var(--radius-md)',
@@ -2088,36 +2756,62 @@ export function App() {
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '0.9rem',
+                  boxShadow: '0 14px 36px rgba(0,0,0,0.65)',
                 }}
                 id="forged-card-result"
               >
-                <div>
-                  <div
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '0.68rem',
-                      color: lastForgedMode === 'wild' ? '#4ade80' : 'var(--gold-bright)',
-                      textTransform: 'uppercase',
-                    }}
-                  >
-                    {lastForgedMode === 'wild'
-                      ? `🐾 Released ${lastForgedCards.length} Photo(s) to the Wild Rift · Stat Reveal`
-                      : `🛡️ Bound ${lastForgedCards.length} Photo(s) to Your Deck · Squad (${playerSquad.length}/4)`}
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-start',
+                    gap: '0.5rem',
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <div>
+                    <div
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '0.68rem',
+                        color: lastForgedMode === 'wild' ? '#4ade80' : 'var(--gold-bright)',
+                        textTransform: 'uppercase',
+                        fontWeight: 700,
+                      }}
+                    >
+                      {lastForgedMode === 'wild'
+                        ? `🐾 Released ${lastForgedCards.length} AI-Named Photo(s) to the Wild Rift · Stat Reveal`
+                        : `🛡️ Bound ${lastForgedCards.length} AI-Named Photo(s) to Your Deck · Squad (${playerSquad.length}/4)`}
+                    </div>
+                    <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
+                      {lastForgedMode === 'wild'
+                        ? 'These photos were NOT saved to your deck. Their AI-named cards and stats are shown below, and they now roam The Wilds where you can fight them anytime!'
+                        : isSquadReady
+                        ? 'Your 4-card Squad is complete! You can now fight Wild Photos or PvP Rivals.'
+                        : `Upload ${missingSquadCount} more photo(s) to your Deck to complete your 4-card Squad.`}
+                    </p>
                   </div>
-                  <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-                    {lastForgedMode === 'wild'
-                      ? 'These photos were NOT saved to your deck. Their generated stats are shown below, and they now roam The Wilds where you can fight them anytime!'
-                      : isSquadReady
-                      ? 'Your 4-card Squad is complete! You can now fight Wild Photos in The Wilds.'
-                      : `Upload ${missingSquadCount} more photo(s) to your Deck to complete your 4-card Squad.`}
-                  </p>
+                  <button
+                    type="button"
+                    className="btn btn-surface"
+                    style={{ minHeight: '32px', padding: '0.3rem 0.65rem', fontSize: '0.72rem' }}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <Plus size={13} /> Forge More Photos
+                  </button>
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-                  {lastForgedCards.map((fc) => (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.95rem' }}>
+                  {lastForgedCards.map((fc, idx) => (
                     <div
                       key={fc.id}
-                      style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}
+                      className="forged-card-reveal-anim"
+                      style={{
+                        animationDelay: `${idx * 120}ms`,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.45rem',
+                      }}
                     >
                       {fc.category && (
                         <div
@@ -2149,7 +2843,7 @@ export function App() {
                                 textTransform: 'uppercase',
                               }}
                             >
-                              📸 Classified Category: {fc.category} ({fc.categoryConfidence ?? 90}% Match)
+                              ✨ AI Identity: "{fc.title}" · 📸 {fc.category} ({fc.categoryConfidence ?? 90}% Match)
                             </span>
                             {fc.categoryBonusLabel && (
                               <span

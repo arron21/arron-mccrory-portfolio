@@ -329,20 +329,20 @@ api.post(
         const savingsRatio =
           finalOrigBytes > 0 ? Math.max(0, 1 - opt.optimizedSizeBytes / finalOrigBytes) : 0;
 
-        const baseTitle = file.originalname
-          .replace(/\.[^/.]+$/, '')
-          .replace(/[-_]+/g, ' ')
-          .replace(/\b\w/g, (l) => l.toUpperCase());
+        const rawCustomTitle = (customTitles[file.originalname] || '').trim();
+        const isGenericCameraCode = /^(img|dsc|dscf|dscn|pxl|dcim|mvi|gopr|dji|screenshot|photo|image|untitled)[\s_-]*\d*$/i.test(
+          rawCustomTitle
+        );
 
         const cardTitle = (
-          customTitles[file.originalname] ||
-          baseTitle ||
+          (!isGenericCameraCode && rawCustomTitle) ||
+          forged.aiName ||
           (isWild ? 'Wild Rift Anomaly' : 'Chromatic Relic')
         ).trim();
 
         const defaultCaption = isWild
-          ? `Released into the Wild Rift! [${forged.category} Photography · ${forged.categoryBonusLabel}] (${forged.rarity} ${forged.element} ${forged.role})`
-          : `Classified as ${forged.category} Photography (${forged.categoryBonusLabel}) · ${opt.width}×${opt.height} frame (${mergedExif.focalLength} · ${mergedExif.aperture}).`;
+          ? `Released into the Wild Rift! ${forged.aiCaption}`
+          : forged.aiCaption;
 
         const cardCaption = (
           customCaptions[file.originalname] || defaultCaption
