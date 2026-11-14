@@ -6,18 +6,18 @@ import {
   Leaf,
   Sparkles,
   Contrast,
-  Zap,
-  Camera,
   Shield,
-  ChevronDown,
-  ChevronUp,
-  Tag,
+  Swords,
+  Zap,
+  Wand2,
 } from 'lucide-react';
 import {
-  formatBytes,
+  ELEMENT_DISPLAY,
+  ROLE_DISPLAY,
   VIBE_DEFINITIONS,
   type MmoCard,
   type ElementType,
+  type CardRole,
   type PhotoCategory,
   type VibeType,
 } from '../types.ts';
@@ -29,15 +29,6 @@ interface CombatCardViewProps {
   onJudgeVibe?: (cardId: string, vibe: VibeType) => Promise<void> | void;
   footerActions?: React.ReactNode;
 }
-
-const ELEMENT_COLORS: Record<ElementType, string> = {
-  Solar: 'var(--elem-solar)',
-  Abyssal: 'var(--elem-abyssal)',
-  Crimson: 'var(--elem-crimson)',
-  Verdant: 'var(--elem-verdant)',
-  Astral: 'var(--elem-astral)',
-  Monochrome: 'var(--elem-monochrome)',
-};
 
 const CATEGORY_ICONS: Record<PhotoCategory, string> = {
   Portrait: '👤',
@@ -51,19 +42,33 @@ const CATEGORY_ICONS: Record<PhotoCategory, string> = {
 };
 
 export function ElementIcon({ element, size = 13 }: { element: ElementType; size?: number }) {
+  const color = ELEMENT_DISPLAY[element]?.color || 'var(--gold-primary)';
   switch (element) {
     case 'Solar':
-      return <Sun size={size} style={{ color: ELEMENT_COLORS.Solar }} />;
+      return <Sun size={size} style={{ color }} />;
     case 'Abyssal':
-      return <Waves size={size} style={{ color: ELEMENT_COLORS.Abyssal }} />;
+      return <Waves size={size} style={{ color }} />;
     case 'Crimson':
-      return <Flame size={size} style={{ color: ELEMENT_COLORS.Crimson }} />;
+      return <Flame size={size} style={{ color }} />;
     case 'Verdant':
-      return <Leaf size={size} style={{ color: ELEMENT_COLORS.Verdant }} />;
+      return <Leaf size={size} style={{ color }} />;
     case 'Astral':
-      return <Sparkles size={size} style={{ color: ELEMENT_COLORS.Astral }} />;
+      return <Sparkles size={size} style={{ color }} />;
     case 'Monochrome':
-      return <Contrast size={size} style={{ color: ELEMENT_COLORS.Monochrome }} />;
+      return <Contrast size={size} style={{ color }} />;
+  }
+}
+
+export function RoleIcon({ role, size = 12 }: { role: CardRole; size?: number }) {
+  switch (role) {
+    case 'Vanguard':
+      return <Shield size={size} />;
+    case 'Bruiser':
+      return <Zap size={size} />;
+    case 'Striker':
+      return <Swords size={size} />;
+    case 'Arcanist':
+      return <Wand2 size={size} />;
   }
 }
 
@@ -74,9 +79,13 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
   onJudgeVibe,
   footerActions,
 }) => {
-  const [showTelemetry, setShowTelemetry] = useState(false);
-  const [lastClickedVibe, setLastClickedVibe] = useState<string | null>(null);
-  const elemColor = ELEMENT_COLORS[card.element] || 'var(--gold-primary)';
+  const [recentVibe, setRecentVibe] = useState<string | null>(null);
+
+  const elementMeta = ELEMENT_DISPLAY[card.element] || {
+    label: card.element,
+    color: 'var(--gold-primary)',
+  };
+  const roleMeta = ROLE_DISPLAY[card.role] || { label: card.role };
   const category = card.category || 'Still Life';
   const catEmoji = CATEGORY_ICONS[category] || '📷';
 
@@ -89,263 +98,121 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
     epic: 0,
   };
 
-  const totalJudgments = Object.values(vibeCounts).reduce((sum, n) => sum + (n || 0), 0);
-  const dominantVibeDef = card.dominantVibe
-    ? VIBE_DEFINITIONS.find((v) => v.id === card.dominantVibe)
-    : undefined;
+  const earnedBadges = VIBE_DEFINITIONS.map((vibe) => ({
+    ...vibe,
+    count: vibeCounts[vibe.id] || 0,
+  }))
+    .filter((item) => item.count > 0)
+    .sort((a, b) => b.count - a.count);
 
-  const handleVibeClick = (vibe: VibeType, description: string) => {
-    setLastClickedVibe(description);
+  const handleVibeClick = (vibe: VibeType, label: string, emoji: string) => {
+    setRecentVibe(`${emoji} +1 ${label}`);
     if (onJudgeVibe) {
       onJudgeVibe(card.id, vibe);
     }
     window.setTimeout(() => {
-      setLastClickedVibe((prev) => (prev === description ? null : prev));
-    }, 1800);
+      setRecentVibe((prev) => (prev === `${emoji} +1 ${label}` ? null : prev));
+    }, 1400);
   };
 
   return (
-    <article className={`combat-card foil-${card.foil}`}>
+    <article
+      className={`combat-card foil-${card.foil}${compact ? ' is-compact' : ''}`}
+      style={{ ['--card-elem-color' as string]: elementMeta.color }}
+    >
+      {/* Clean Photography Showcase */}
       <div className="card-art-wrap" style={compact ? { aspectRatio: '16 / 10' } : undefined}>
         <img src={card.imageUrl} alt={card.title} loading="lazy" />
         {card.foil !== 'Standard' && <div className="card-foil-glare" />}
 
-        <div className="card-top-badges">
-          <span className="card-pill" style={{ borderColor: elemColor }}>
-            <ElementIcon element={card.element} size={12} />
-            <span>{card.element}</span>
-            <span style={{ opacity: 0.7 }}>· Lv.{card.level}</span>
-          </span>
-
-          <span className="card-pill">
-            {slotBadge ? (
-              <span style={{ color: 'var(--gold-bright)' }}>{slotBadge}</span>
-            ) : card.isWild ? (
-              <span style={{ color: '#f87171' }}>
-                🐾 WILD · {card.rarity}
-              </span>
-            ) : (
-              <span>
-                {card.rarity}
-                {card.foil !== 'Standard' ? ` · ${card.foil}` : ''}
-              </span>
-            )}
-          </span>
-        </div>
-
-        <div className="card-art-bottom">
-          <div className="card-title-group" style={{ minWidth: 0 }}>
-            <div className="card-epithet">
-              {catEmoji} {category} · {card.role}
-              {dominantVibeDef && totalJudgments > 0
-                ? ` · ${dominantVibeDef.emoji} ${dominantVibeDef.label}`
-                : ''}
-            </div>
-            <h3
-              style={{
-                whiteSpace: compact ? 'nowrap' : 'normal',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-              }}
-            >
-              {card.title}
-            </h3>
+        {(slotBadge || card.isWild) && (
+          <div className="card-top-badges">
+            <span className="card-pill card-pill-status">
+              {slotBadge ? (
+                <span style={{ color: 'var(--gold-bright)' }}>{slotBadge}</span>
+              ) : (
+                <span style={{ color: '#f87171' }}>Wild</span>
+              )}
+            </span>
           </div>
-          <div className="card-power-badge" title="Combat Power Rating">
-            ⚔ {card.powerRating}
-          </div>
-        </div>
+        )}
       </div>
 
       <div className="card-body">
-        {/* Photography Category & Stat Modifier Pill Row */}
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            gap: '0.4rem',
-            background: 'hsla(38, 62%, 60%, 0.1)',
-            border: '1px solid var(--border-gold)',
-            borderRadius: 'var(--radius-sm)',
-            padding: '0.35rem 0.55rem',
-            fontFamily: 'var(--font-mono)',
-            fontSize: '0.63rem',
-          }}
-        >
-          <span
-            style={{
-              color: 'var(--gold-bright)',
-              fontWeight: 700,
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '0.3rem',
-            }}
-          >
-            <Tag size={11} />
-            <span>
-              {catEmoji} {category}
-              {card.categoryConfidence ? ` (${card.categoryConfidence}%)` : ''}
-            </span>
-          </span>
-          <span
-            style={{
-              color: '#4ade80',
-              fontWeight: 600,
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-          >
-            {card.categoryBonusLabel || '+Stat Bonus'}
+        {/* Title & Power */}
+        <div className="card-header-row">
+          <h3 className="card-title" title={card.title}>
+            {card.title}
+          </h3>
+          <span className="card-power-badge" title={`Level ${card.level} · Power ${card.powerRating}`}>
+            ⚔ {card.powerRating}
           </span>
         </div>
 
-        <div className="card-stats-row">
-          <div>
-            <span className="stat-box-label">HP</span>
-            <span className="stat-box-val" style={{ color: '#4ade80' }}>
-              {card.hp}
-            </span>
-          </div>
-          <div>
-            <span className="stat-box-label">ATK</span>
-            <span className="stat-box-val" style={{ color: '#f87171' }}>
-              {card.atk}
-            </span>
-          </div>
-          <div>
-            <span className="stat-box-label">DEF</span>
-            <span className="stat-box-val" style={{ color: '#60a5fa' }}>
-              {card.def}
-            </span>
-          </div>
-          <div>
-            <span className="stat-box-label">SPD</span>
-            <span className="stat-box-val" style={{ color: '#38bdf8' }}>
-              {card.spd}
-            </span>
-          </div>
-          <div>
-            <span className="stat-box-label">CRT</span>
-            <span className="stat-box-val" style={{ color: 'var(--gold-bright)' }}>
-              {card.crit}%
-            </span>
-          </div>
+        {/* Core Identity: Photography Type, Element, Role */}
+        <div className="card-identity-pills">
+          <span className="card-id-pill card-id-category" title="Photography Type">
+            <span>{catEmoji}</span>
+            <span>{category}</span>
+          </span>
+
+          <span
+            className="card-id-pill card-id-element"
+            style={{ borderColor: elementMeta.color, color: elementMeta.color }}
+            title={`${elementMeta.label} Element`}
+          >
+            <ElementIcon element={card.element} size={12} />
+            <span>{elementMeta.label}</span>
+          </span>
+
+          <span className="card-id-pill card-id-role" title={`Role: ${roleMeta.label}`}>
+            <RoleIcon role={card.role} size={11} />
+            <span>{roleMeta.label}</span>
+          </span>
         </div>
 
-        {/* =========================================================
-            PHOTO VIBE JUDGMENT BAR (Cool, Cute, Scary, Funny, Chill, Epic)
-            Saves clicks on the photo & directly boosts its combat stats!
-           ========================================================= */}
-        {onJudgeVibe && (
-          <div
-            style={{
-              background: 'var(--bg-surface)',
-              border: '1px solid var(--border-subtle)',
-              borderRadius: 'var(--radius-sm)',
-              padding: '0.45rem 0.5rem',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.35rem',
-            }}
-          >
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                fontFamily: 'var(--font-mono)',
-                fontSize: '0.6rem',
-                color: 'var(--text-secondary)',
-              }}
-            >
-              <span>
-                JUDGE PHOTO VIBE{' '}
-                {totalJudgments > 0 ? `(${totalJudgments} saved)` : '(Tap to buff stats!)'}
+        {/* Special Community Reaction Badges */}
+        {earnedBadges.length > 0 && (
+          <div className="card-special-badges" aria-label="Special reaction badges">
+            {earnedBadges.map((badge, index) => (
+              <span
+                key={badge.id}
+                className={`card-special-badge${index === 0 ? ' is-top' : ''}`}
+                style={{
+                  borderColor: badge.color,
+                  color: badge.color,
+                }}
+                title={`${badge.count} ${badge.count === 1 ? 'person' : 'people'} called this ${badge.label.toLowerCase()}`}
+              >
+                <span className="badge-emoji">{badge.emoji}</span>
+                <span className="badge-count">{badge.count}</span>
+                <span className="badge-label">{badge.label}</span>
               </span>
-              {lastClickedVibe ? (
-                <span style={{ color: '#4ade80', fontWeight: 700 }}>{lastClickedVibe}</span>
-              ) : dominantVibeDef && totalJudgments > 0 ? (
-                <span style={{ color: dominantVibeDef.color, fontWeight: 700 }}>
-                  {dominantVibeDef.emoji} {dominantVibeDef.label} Aura ({dominantVibeDef.shortStat})
-                </span>
-              ) : (
-                <span style={{ color: 'var(--gold-primary)' }}>😂 Funny = +3% CRIT</span>
-              )}
-            </div>
+            ))}
+          </div>
+        )}
 
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(3, 1fr)',
-                gap: '0.3rem',
-              }}
-            >
+        {/* Lightweight Reaction Bar */}
+        {onJudgeVibe && (
+          <div className="card-react-section">
+            <div className="card-react-header">
+              <span className="card-react-prompt">React</span>
+              {recentVibe && <span className="card-react-toast">{recentVibe}</span>}
+            </div>
+            <div className="card-react-pills">
               {VIBE_DEFINITIONS.map((vibe) => {
                 const count = vibeCounts[vibe.id] || 0;
-                const isDominant = totalJudgments > 0 && card.dominantVibe === vibe.id;
                 return (
                   <button
                     key={vibe.id}
                     type="button"
-                    className="btn btn-surface"
-                    onClick={() =>
-                      handleVibeClick(vibe.id, `${vibe.emoji} ${vibe.description}`)
-                    }
-                    title={`Judge ${vibe.label}: ${vibe.description}`}
-                    style={{
-                      minHeight: '36px',
-                      padding: '0.25rem 0.35rem',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '0.06rem',
-                      borderColor: isDominant
-                        ? vibe.color
-                        : count > 0
-                        ? 'var(--border-gold)'
-                        : undefined,
-                      background: isDominant ? 'hsla(38, 62%, 60%, 0.12)' : undefined,
-                    }}
+                    className={`card-react-btn${count > 0 ? ' has-count' : ''}`}
+                    style={count > 0 ? { borderColor: vibe.color } : undefined}
+                    onClick={() => handleVibeClick(vibe.id, vibe.label, vibe.emoji)}
+                    title={`Mark as ${vibe.label}`}
                   >
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.25rem',
-                        fontSize: '0.7rem',
-                        fontWeight: 700,
-                        color: count > 0 ? vibe.color : 'var(--text-primary)',
-                      }}
-                    >
-                      <span>{vibe.emoji}</span>
-                      <span>{vibe.label}</span>
-                      {count > 0 && (
-                        <span
-                          style={{
-                            fontFamily: 'var(--font-mono)',
-                            fontSize: '0.62rem',
-                            background: 'var(--bg-void)',
-                            padding: '0.02rem 0.28rem',
-                            borderRadius: '999px',
-                            color: vibe.color,
-                          }}
-                        >
-                          {count}
-                        </span>
-                      )}
-                    </div>
-                    <span
-                      style={{
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: '0.53rem',
-                        color: 'var(--text-muted)',
-                      }}
-                    >
-                      {vibe.shortStat}
-                    </span>
+                    <span>{vibe.emoji}</span>
+                    <span>{vibe.label}</span>
                   </button>
                 );
               })}
@@ -353,149 +220,38 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
           </div>
         )}
 
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            alignItems: 'center',
-            gap: '0.35rem',
-            fontFamily: 'var(--font-mono)',
-            fontSize: '0.64rem',
-          }}
-        >
-          <span
-            style={{
-              background: 'var(--gold-subtle)',
-              color: 'var(--gold-bright)',
-              padding: '0.16rem 0.45rem',
-              borderRadius: '4px',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '0.25rem',
-            }}
-          >
-            <Shield size={11} /> {card.opticalTrait}
-          </span>
-          {card.secondaryTrait && (
-            <span
-              style={{
-                background: 'hsla(192, 86%, 60%, 0.14)',
-                color: 'var(--elem-astral)',
-                padding: '0.16rem 0.45rem',
-                borderRadius: '4px',
-              }}
-            >
-              + {card.secondaryTrait}
-            </span>
-          )}
-          <span
-            style={{
-              marginLeft: 'auto',
-              color: 'var(--gold-primary)',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '0.2rem',
-            }}
-            title="Social Hype Resonance (+Stat Buff)"
-          >
-            <Zap size={11} /> {card.hypeCount} Hype
-          </span>
-        </div>
-
+        {/* Quiet Combat Stats Strip on Full Cards */}
         {!compact && (
-          <div className="card-ability-box">
-            <div className="ability-header">
-              <span>✦ {card.ability.name}</span>
-              <span className="ability-trigger-tag">{card.ability.triggerLabel}</span>
-            </div>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.73rem', lineHeight: 1.42 }}>
-              {card.ability.description}
-            </p>
-          </div>
-        )}
-
-        {/* Tap-to-Expand EXIF, RGB Spectrum & Category Classification Telemetry */}
-        <button
-          type="button"
-          className="card-exif-strip"
-          onClick={() => setShowTelemetry((prev) => !prev)}
-          style={{ width: '100%', textAlign: 'left' }}
-        >
-          <span
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '0.3rem',
-              minWidth: 0,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            <Camera size={11} style={{ color: 'var(--gold-primary)', flexShrink: 0 }} />
-            <span>{card.exif.camera || 'Optical Plate'}</span>
-          </span>
-          <span
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '0.25rem',
-              flexShrink: 0,
-              color: 'var(--text-secondary)',
-            }}
-          >
-            {[card.exif.focalLength, card.exif.aperture, card.exif.shutterSpeed]
-              .filter(Boolean)
-              .slice(0, 2)
-              .join(' · ')}
-            {showTelemetry ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-          </span>
-        </button>
-
-        {showTelemetry && (
-          <div
-            style={{
-              background: 'var(--bg-surface)',
-              border: '1px solid var(--border-subtle)',
-              borderRadius: 'var(--radius-sm)',
-              padding: '0.5rem 0.65rem',
-              fontFamily: 'var(--font-mono)',
-              fontSize: '0.64rem',
-              color: 'var(--text-secondary)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.28rem',
-            }}
-          >
-            {card.categoryReason && (
-              <div style={{ color: 'var(--gold-bright)' }}>
-                <strong>Category Analysis ({category}):</strong> {card.categoryReason}
-              </div>
-            )}
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span>
-                RGB Spectrum: R{card.colorTelemetry.r} · G{card.colorTelemetry.g} · B
-                {card.colorTelemetry.b}
+          <div className="card-stats-row">
+            <div>
+              <span className="stat-box-label">HP</span>
+              <span className="stat-box-val" style={{ color: '#4ade80' }}>
+                {card.hp}
               </span>
-              <span>Contrast: {card.colorTelemetry.contrast}</span>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span>
-                EXIF:{' '}
-                {[
-                  card.exif.focalLength,
-                  card.exif.aperture,
-                  card.exif.shutterSpeed,
-                  card.exif.iso,
-                ]
-                  .filter(Boolean)
-                  .join(' · ') || 'Standard Telemetry'}
+            <div>
+              <span className="stat-box-label">ATK</span>
+              <span className="stat-box-val" style={{ color: '#f87171' }}>
+                {card.atk}
               </span>
-              {card.optimizedSizeBytes > 0 && (
-                <span style={{ color: '#4ade80' }}>
-                  -{card.savingsPercent}% ({formatBytes(card.optimizedSizeBytes)})
-                </span>
-              )}
+            </div>
+            <div>
+              <span className="stat-box-label">DEF</span>
+              <span className="stat-box-val" style={{ color: '#60a5fa' }}>
+                {card.def}
+              </span>
+            </div>
+            <div>
+              <span className="stat-box-label">SPD</span>
+              <span className="stat-box-val" style={{ color: '#38bdf8' }}>
+                {card.spd}
+              </span>
+            </div>
+            <div>
+              <span className="stat-box-label">CRT</span>
+              <span className="stat-box-val" style={{ color: 'var(--gold-bright)' }}>
+                {card.crit}%
+              </span>
             </div>
           </div>
         )}

@@ -82,6 +82,22 @@ export const VIBE_DEFINITIONS: VibeDefinition[] = [
 
 export type CardRole = 'Vanguard' | 'Bruiser' | 'Striker' | 'Arcanist';
 
+export const ELEMENT_DISPLAY: Record<ElementType, { label: string; color: string }> = {
+  Crimson: { label: 'Fire', color: 'var(--elem-crimson)' },
+  Verdant: { label: 'Earth', color: 'var(--elem-verdant)' },
+  Abyssal: { label: 'Water', color: 'var(--elem-abyssal)' },
+  Solar: { label: 'Light', color: 'var(--elem-solar)' },
+  Astral: { label: 'Cosmic', color: 'var(--elem-astral)' },
+  Monochrome: { label: 'Shadow', color: 'var(--elem-monochrome)' },
+};
+
+export const ROLE_DISPLAY: Record<CardRole, { label: string }> = {
+  Vanguard: { label: 'Defender' },
+  Bruiser: { label: 'Brawler' },
+  Striker: { label: 'Attacker' },
+  Arcanist: { label: 'Caster' },
+};
+
 export type RarityTier = 'Common' | 'Rare' | 'Epic' | 'Legendary' | 'Mythic';
 
 export type FoilTier = 'Standard' | 'Holo' | 'Prismatic' | 'MythicRelic';

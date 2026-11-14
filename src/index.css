@@ -594,7 +594,7 @@ button {
 }
 
 /* =========================================================
-   COLLECTIBLE COMBAT CARD COMPONENT (MOBILE-OPTIMIZED)
+   COLLECTIBLE COMBAT CARD COMPONENT (PHOTO-FIRST)
    ========================================================= */
 .combat-card {
   position: relative;
@@ -605,16 +605,17 @@ button {
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-card);
+  transition: border-color 0.2s ease, transform 0.2s ease;
 }
 
 .combat-card.foil-Holo {
-  border-color: hsla(38, 78%, 64%, 0.5);
+  border-color: hsla(38, 78%, 64%, 0.48);
 }
 
 .combat-card.foil-Prismatic,
 .combat-card.foil-MythicRelic {
-  border-color: hsla(192, 86%, 64%, 0.6);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.7), 0 0 18px hsla(38, 75%, 60%, 0.15);
+  border-color: hsla(192, 86%, 64%, 0.56);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.7), 0 0 18px hsla(38, 75%, 60%, 0.14);
 }
 
 .card-art-wrap {
@@ -639,8 +640,8 @@ button {
   background: linear-gradient(
     125deg,
     transparent 18%,
-    rgba(255, 230, 165, 0.16) 44%,
-    rgba(130, 220, 255, 0.16) 56%,
+    rgba(255, 230, 165, 0.14) 44%,
+    rgba(130, 220, 255, 0.14) 56%,
     transparent 82%
   );
   mix-blend-mode: screen;
@@ -648,11 +649,10 @@ button {
 
 .card-top-badges {
   position: absolute;
-  top: 0.55rem;
-  left: 0.55rem;
-  right: 0.55rem;
+  top: 0.5rem;
+  right: 0.5rem;
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   gap: 0.35rem;
 }
@@ -661,129 +661,228 @@ button {
   padding: 0.2rem 0.5rem;
   border-radius: 6px;
   font-family: var(--font-mono);
-  font-size: 0.64rem;
+  font-size: 0.62rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  background: rgba(7, 8, 12, 0.86);
+  background: rgba(7, 8, 12, 0.84);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   display: inline-flex;
   align-items: center;
   gap: 0.28rem;
   white-space: nowrap;
 }
 
-.card-art-bottom {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  padding: 1.6rem 0.75rem 0.55rem;
-  background: linear-gradient(to top, rgba(7, 8, 12, 0.96) 15%, transparent 100%);
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 0.5rem;
-}
-
-.card-title-group h3 {
-  font-family: var(--font-display);
-  font-size: 1.02rem;
-  font-weight: 700;
-  color: var(--text-primary);
-  line-height: 1.15;
-}
-
-.card-epithet {
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  color: var(--gold-primary);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.card-power-badge {
-  font-family: var(--font-mono);
-  font-size: 0.74rem;
-  font-weight: 700;
-  color: var(--gold-bright);
-  background: rgba(214, 168, 90, 0.18);
-  border: 1px solid var(--border-gold);
-  padding: 0.2rem 0.48rem;
-  border-radius: 6px;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
 .card-body {
-  padding: 0.75rem;
+  padding: 0.72rem 0.78rem 0.78rem;
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
   flex: 1;
 }
 
+.combat-card.is-compact .card-body {
+  padding: 0.55rem 0.6rem;
+  gap: 0.4rem;
+}
+
+.card-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.card-title {
+  font-family: var(--font-display);
+  font-size: 1.04rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.18;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.combat-card.is-compact .card-title {
+  font-size: 0.9rem;
+}
+
+.card-power-badge {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--gold-bright);
+  background: rgba(214, 168, 90, 0.14);
+  border: 1px solid var(--border-gold);
+  padding: 0.18rem 0.46rem;
+  border-radius: 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.card-identity-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.34rem;
+}
+
+.card-id-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.26rem;
+  padding: 0.2rem 0.48rem;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  font-weight: 600;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.card-id-category {
+  color: var(--gold-bright);
+  border-color: var(--border-gold);
+  background: hsla(38, 62%, 55%, 0.08);
+}
+
+.card-id-role {
+  color: var(--text-secondary);
+}
+
+.card-special-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.34rem;
+}
+
+.card-special-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.24rem;
+  padding: 0.22rem 0.52rem;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015));
+  border: 1px solid var(--border-gold);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 700;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+}
+
+.card-special-badge.is-top {
+  background: linear-gradient(135deg, rgba(214, 168, 90, 0.18), rgba(255, 255, 255, 0.04));
+  box-shadow: 0 0 12px rgba(214, 168, 90, 0.16);
+}
+
+.card-special-badge .badge-emoji {
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.card-special-badge .badge-count {
+  font-weight: 800;
+}
+
+.card-special-badge .badge-label {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.card-react-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  padding-top: 0.15rem;
+}
+
+.card-react-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 15px;
+}
+
+.card-react-prompt {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.card-react-toast {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: #4ade80;
+}
+
+.card-react-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.card-react-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.24rem;
+  padding: 0.24rem 0.52rem;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+}
+
+.card-react-btn:hover {
+  border-color: var(--border-gold);
+  color: var(--text-primary);
+  background: hsla(38, 62%, 55%, 0.1);
+}
+
+.card-react-btn:active {
+  transform: scale(0.96);
+}
+
+.card-react-btn.has-count {
+  color: var(--text-primary);
+}
+
 .card-stats-row {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 0.25rem;
-  background: var(--bg-surface);
-  padding: 0.42rem 0.3rem;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 0.36rem 0.3rem;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-subtle);
   text-align: center;
   font-family: var(--font-mono);
+  margin-top: auto;
 }
 
 .stat-box-label {
-  font-size: 0.58rem;
+  font-size: 0.56rem;
   color: var(--text-muted);
   display: block;
 }
 
 .stat-box-val {
-  font-size: 0.74rem;
+  font-size: 0.72rem;
   font-weight: 700;
   color: var(--text-primary);
-}
-
-.card-ability-box {
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  padding: 0.5rem 0.6rem;
-  font-size: 0.74rem;
-}
-
-.ability-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.35rem;
-  margin-bottom: 0.15rem;
-  font-weight: 600;
-  color: var(--gold-bright);
-}
-
-.ability-trigger-tag {
-  font-family: var(--font-mono);
-  font-size: 0.6rem;
-  color: var(--text-muted);
-}
-
-.card-exif-strip {
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  color: var(--text-muted);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.4rem;
-  padding-top: 0.4rem;
-  border-top: 1px solid var(--border-subtle);
-  margin-top: auto;
 }
 
 /* =========================================================

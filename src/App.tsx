@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import {
   formatBytes,
+  ELEMENT_DISPLAY,
   VIBE_DEFINITIONS,
   type MmoState,
   type MmoCard,
@@ -2929,58 +2930,6 @@ export function App() {
                         gap: '0.45rem',
                       }}
                     >
-                      {fc.category && (
-                        <div
-                          style={{
-                            background: 'var(--bg-surface)',
-                            border: '1px solid var(--border-gold)',
-                            borderRadius: 'var(--radius-sm)',
-                            padding: '0.55rem 0.7rem',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '0.2rem',
-                          }}
-                        >
-                          <div
-                            style={{
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'center',
-                              flexWrap: 'wrap',
-                              gap: '0.35rem',
-                            }}
-                          >
-                            <span
-                              style={{
-                                fontFamily: 'var(--font-mono)',
-                                fontSize: '0.68rem',
-                                fontWeight: 700,
-                                color: 'var(--gold-bright)',
-                                textTransform: 'uppercase',
-                              }}
-                            >
-                              ✨ Card Identity: "{fc.title}" · 📸 {fc.category} ({fc.categoryConfidence ?? 90}% Match)
-                            </span>
-                            {fc.categoryBonusLabel && (
-                              <span
-                                style={{
-                                  fontFamily: 'var(--font-mono)',
-                                  fontSize: '0.64rem',
-                                  color: '#4ade80',
-                                  fontWeight: 700,
-                                }}
-                              >
-                                {fc.categoryBonusLabel}
-                              </span>
-                            )}
-                          </div>
-                          {fc.categoryReason && (
-                            <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-                              {fc.categoryReason}
-                            </span>
-                          )}
-                        </div>
-                      )}
                       <CombatCardView
                         card={fc}
                         onJudgeVibe={handleJudgePhotoVibe}
@@ -3259,7 +3208,7 @@ export function App() {
                     }}
                     onClick={() => setVaultFilter(pill)}
                   >
-                    {pill}
+                    {pill in ELEMENT_DISPLAY ? ELEMENT_DISPLAY[pill as ElementType].label : pill}
                   </button>
                 ))}
               </div>
