@@ -51,9 +51,9 @@ import {
 import {
   preparePhotoForUpload,
   analyzeStagedPhotoPreview,
-  generateClientAiNamesAndLore,
+  deriveShortNamesFromDescription,
+  generateShortNameFromServerDescription,
   type StagedPhotoAiPreview,
-  type AiNamingTheme,
 } from './utils/clientOptimizer.ts';
 import {
   savePersistentMmoState,
@@ -118,12 +118,14 @@ export function App() {
   // Social Feed comment inputs
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
 
-  // Soul-Lens Forge Upload state (Supports 1 or multiple photos + Deck vs Wild destination + AI Auto-Naming)
+  // Soul-Lens Forge Upload state (2-Step AI: Analyze + NSFW Purge -> Description -> Short Name)
   const [forgeDestination, setForgeDestination] = useState<'deck' | 'wild'>('deck');
   const [stagedFiles, setStagedFiles] = useState<File[]>([]);
   const [stagedPreviews, setStagedPreviews] = useState<string[]>([]);
   const [stagedAiPreviews, setStagedAiPreviews] = useState<StagedPhotoAiPreview[]>([]);
-  const [aiNamingTheme, setAiNamingTheme] = useState<AiNamingTheme>('auto');
+  const [nsfwDeletedAlerts, setNsfwDeletedAlerts] = useState<
+    Array<{ fileName: string; reason: string }>
+  >([]);
   const [analyzingPreview, setAnalyzingPreview] = useState(false);
   const [dropzoneDragging, setDropzoneDragging] = useState(false);
   const [forgeTitle, setForgeTitle] = useState('');
@@ -544,7 +546,7 @@ export function App() {
     }
   };
 
-  // Select 1 or multiple files for Soul-Lens Card Forging + Instant AI Vision Naming
+  // Step 1: Analyze staged photo(s) -> immediately delete any NSFW image -> Step 2: derive short card name from description
   const handleSelectForgeFiles = async (fileList: FileList | File[]) => {
     const incoming = Array.from(fileList).slice(0, 10);
     if (incoming.length === 0) return;
@@ -552,76 +554,114 @@ export function App() {
     stagedPreviews.forEach((url) => URL.revokeObjectURL(url));
     stagedAiPreviews.forEach((p) => URL.revokeObjectURL(p.previewUrl));
 
+    setNsfwDeletedAlerts([]);
     setStagedFiles(incoming);
     setStagedPreviews(incoming.map((f) => URL.createObjectURL(f)));
     setAnalyzingPreview(true);
 
     try {
       const analyzed = await Promise.all(
-        incoming.map((f) => analyzeStagedPhotoPreview(f, aiNamingTheme))
+        incoming.map((f) => analyzeStagedPhotoPreview(f))
       );
-      setStagedAiPreviews(analyzed);
-      if (analyzed.length > 0) {
-        setForgeTitle(analyzed[0].aiName);
-        setForgeCaption(analyzed[0].aiCaption);
+
+      const safeFiles: File[] = [];
+      const safePreviews: string[] = [];
+      const safeAi: StagedPhotoAiPreview[] = [];
+      const blocked: Array<{ fileName: string; reason: string }> = [];
+
+      analyzed.forEach((item, idx) => {
+        if (item.isNsfw) {
+          // Immediately revoke & purge any NSFW upload from memory
+          URL.revokeObjectURL(item.previewUrl);
+          blocked.push({
+            fileName: item.fileName,
+            reason:
+              item.nsfwReason ||
+              'NSFW content detected and deleted before storage.',
+          });
+        } else {
+          safeFiles.push(incoming[idx]);
+          safePreviews.push(item.previewUrl);
+          safeAi.push(item);
+        }
+      });
+
+      setStagedFiles(safeFiles);
+      setStagedPreviews(safePreviews);
+      setStagedAiPreviews(safeAi);
+      setNsfwDeletedAlerts(blocked);
+
+      if (safeAi.length > 0) {
+        setForgeTitle(safeAi[0].aiName);
+        setForgeCaption(safeAi[0].aiDescription);
+      } else {
+        setForgeTitle('');
+        setForgeCaption('');
       }
-      showToast(
-        `✨ AI Vision analyzed ${analyzed.length} photo${
-          analyzed.length > 1 ? 's' : ''
-        } & generated card identity!`
-      );
+
+      if (blocked.length > 0 && safeAi.length === 0) {
+        showToast(
+          `🛡️ NSFW Shield: Deleted ${blocked.length} flagged image(s). Upload a safe photo.`
+        );
+      } else if (blocked.length > 0) {
+        showToast(
+          `🛡️ Deleted ${blocked.length} NSFW image(s). Named ${safeAi.length} safe photo(s) from AI description!`
+        );
+      } else {
+        showToast(
+          `✨ Analyzed ${safeAi.length} photo${
+            safeAi.length > 1 ? 's' : ''
+          } & generated short name from image description!`
+        );
+      }
     } finally {
       setAnalyzingPreview(false);
     }
   };
 
-  // Switch AI Naming Theme (Auto Vision, Mythic Fantasy, Cyber-Optic, Primal Wild, Arcane Relic)
-  const handleChangeAiNamingTheme = (nextTheme: AiNamingTheme) => {
-    setAiNamingTheme(nextTheme);
-    if (stagedAiPreviews.length === 0) return;
+  // Re-run Step 2 using JUST the image description for a specific photo
+  const handleRegenerateNameFromDescription = async (idx: number) => {
+    const target = stagedAiPreviews[idx];
+    if (!target) return;
 
-    const updated = stagedAiPreviews.map((prev) => {
-      const { aiNamePool, aiCaptionPool } = generateClientAiNamesAndLore({
-        fileName: prev.fileName,
-        element: prev.predictedElement,
-        category: prev.predictedCategory,
-        role: prev.predictedRole,
-        r: prev.r,
-        g: prev.g,
-        b: prev.b,
-        luminance: prev.luminance,
-        contrast: prev.contrast,
-        saturation: prev.saturation,
-        exif: prev.exif,
-        theme: nextTheme,
-      });
-      return {
-        ...prev,
-        aiNamePool,
-        aiCaptionPool,
-        aiName: aiNamePool[0],
-        aiCaption: aiCaptionPool[0],
+    const { shortName, alternatives } = await generateShortNameFromServerDescription(
+      target.aiDescription
+    );
+
+    setStagedAiPreviews((prev) => {
+      const next = [...prev];
+      const item = next[idx];
+      if (!item) return prev;
+      next[idx] = {
+        ...item,
+        aiName: shortName,
+        aiNamePool: alternatives,
         rerollIndex: 0,
       };
+      return next;
     });
 
-    setStagedAiPreviews(updated);
-    if (updated.length > 0) {
-      setForgeTitle(updated[0].aiName);
-      setForgeCaption(updated[0].aiCaption);
+    if (idx === 0) {
+      setForgeTitle(shortName);
     }
+    showToast(`✨ Generated short card name "${shortName}" from image description!`);
   };
 
-  // Re-Roll AI Card Name for a single staged photo
+  // Cycle short name suggestions (all derived solely from the image description)
   const handleRerollPhotoAiName = (idx: number) => {
     setStagedAiPreviews((prev) => {
       const next = [...prev];
       const item = next[idx];
       if (!item) return prev;
-      const nextIdx = (item.rerollIndex + 1) % item.aiNamePool.length;
-      const nextName = item.aiNamePool[nextIdx];
+      const pool =
+        item.aiNamePool.length > 0
+          ? item.aiNamePool
+          : deriveShortNamesFromDescription(item.aiDescription);
+      const nextIdx = (item.rerollIndex + 1) % pool.length;
+      const nextName = pool[nextIdx];
       next[idx] = {
         ...item,
+        aiNamePool: pool,
         rerollIndex: nextIdx,
         aiName: nextName,
       };
@@ -632,50 +672,31 @@ export function App() {
     });
   };
 
-  // Re-Roll AI Lore Caption for a single staged photo
-  const handleRerollPhotoAiLore = (idx: number) => {
-    setStagedAiPreviews((prev) => {
-      const next = [...prev];
-      const item = next[idx];
-      if (!item) return prev;
-      const curIdx = item.aiCaptionPool.indexOf(item.aiCaption);
-      const nextIdx = (curIdx + 1) % item.aiCaptionPool.length;
-      const nextCaption = item.aiCaptionPool[nextIdx];
-      next[idx] = {
-        ...item,
-        aiCaption: nextCaption,
-      };
-      if (idx === 0) {
-        setForgeCaption(nextCaption);
-      }
-      return next;
-    });
-  };
-
-  // Re-Roll All Staged Photos' AI Names & Lore at once
+  // Cycle short names for all staged photos from their descriptions
   const handleRerollAllAiNames = () => {
     setStagedAiPreviews((prev) => {
       const next = prev.map((item) => {
-        const nextIdx = (item.rerollIndex + 1) % item.aiNamePool.length;
-        const nextCapIdx =
-          (item.aiCaptionPool.indexOf(item.aiCaption) + 1) % item.aiCaptionPool.length;
+        const pool =
+          item.aiNamePool.length > 0
+            ? item.aiNamePool
+            : deriveShortNamesFromDescription(item.aiDescription);
+        const nextIdx = (item.rerollIndex + 1) % pool.length;
         return {
           ...item,
+          aiNamePool: pool,
           rerollIndex: nextIdx,
-          aiName: item.aiNamePool[nextIdx],
-          aiCaption: item.aiCaptionPool[nextCapIdx],
+          aiName: pool[nextIdx],
         };
       });
       if (next.length > 0) {
         setForgeTitle(next[0].aiName);
-        setForgeCaption(next[0].aiCaption);
       }
       return next;
     });
-    showToast('🎲 Re-rolled AI Vision Card Names & Lore!');
+    showToast('🎲 Cycled short card names from image descriptions!');
   };
 
-  // Edit a specific staged photo's AI Card Name
+  // Edit a specific staged photo's Short Card Name
   const handleUpdateStagedPhotoName = (idx: number, newName: string) => {
     setStagedAiPreviews((prev) => {
       const next = [...prev];
@@ -688,16 +709,21 @@ export function App() {
     }
   };
 
-  // Edit a specific staged photo's AI Lore Caption
-  const handleUpdateStagedPhotoCaption = (idx: number, newCaption: string) => {
+  // Edit a specific staged photo's AI Description (Step 1 output) & refresh short name pool
+  const handleUpdateStagedPhotoDescription = (idx: number, newDescription: string) => {
+    const newPool = deriveShortNamesFromDescription(newDescription);
     setStagedAiPreviews((prev) => {
       const next = [...prev];
       if (!next[idx]) return prev;
-      next[idx] = { ...next[idx], aiCaption: newCaption };
+      next[idx] = {
+        ...next[idx],
+        aiDescription: newDescription,
+        aiNamePool: newPool,
+      };
       return next;
     });
     if (idx === 0) {
-      setForgeCaption(newCaption);
+      setForgeCaption(newDescription);
     }
   };
 
@@ -711,7 +737,7 @@ export function App() {
     setStagedAiPreviews(nextAi);
     if (nextAi.length > 0) {
       setForgeTitle(nextAi[0].aiName);
-      setForgeCaption(nextAi[0].aiCaption);
+      setForgeCaption(nextAi[0].aiDescription);
     } else {
       setForgeTitle('');
       setForgeCaption('');
@@ -730,6 +756,7 @@ export function App() {
     setLastForgedMode(forgeDestination);
 
     const allCreatedCards: MmoCard[] = [];
+    const serverDeletedNsfw: Array<{ fileName: string; reason: string }> = [];
     let latestState: MmoState | null = null;
     const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -742,55 +769,55 @@ export function App() {
         const baseProgress = Math.round((i / stagedFiles.length) * 100);
         const stepSpan = Math.round(100 / stagedFiles.length);
 
-        // Stage 1: Optical EXIF & WebP Compression
+        // Stage 1: AI Image Analysis + NSFW Verification
         setForgeStageIndex(0);
         setForgeProgressPercent(Math.min(96, baseProgress + Math.round(stepSpan * 0.2)));
         setForgeStatusText(
-          `[${i + 1}/${stagedFiles.length}] Stage 1/4: Extracting EXIF & WebP Master Optimization...`
+          `[${i + 1}/${stagedFiles.length}] Stage 1/4: AI Image Analysis & NSFW Safety Scan...`
         );
 
         const prepared = await preparePhotoForUpload(file);
         const fname = prepared.uploadFile.name;
-        await pause(220);
+        await pause(200);
 
-        // Stage 2: 64x64 Spatial Vision & Photography Genre Classification
+        // Stage 2: Step 2 Short Card Name from Image Description
         setForgeStageIndex(1);
         setForgeProgressPercent(Math.min(96, baseProgress + Math.round(stepSpan * 0.45)));
-        setForgeStatusText(
-          `[${i + 1}/${stagedFiles.length}] Stage 2/4: Scanning 64×64 Spatial Vision (${
-            aiMeta?.predictedCategory || 'Genre'
-          })...`
-        );
-        await pause(240);
-
-        // Stage 3: RGB Chromatic Spectrum & Elemental Resonance
-        setForgeStageIndex(2);
-        setForgeProgressPercent(Math.min(96, baseProgress + Math.round(stepSpan * 0.7)));
-        setForgeStatusText(
-          `[${i + 1}/${stagedFiles.length}] Stage 3/4: Synthesizing ${
-            aiMeta?.predictedElement || 'Chromatic'
-          } Elemental Resonance...`
-        );
-        await pause(220);
-
-        // Stage 4: AI Card Naming & Combat Stat Binding
-        setForgeStageIndex(3);
-        setForgeProgressPercent(Math.min(98, baseProgress + Math.round(stepSpan * 0.9)));
         const resolvedTitle = (
           aiMeta?.aiName?.trim() ||
           (i === 0 ? forgeTitle.trim() : '') ||
           ''
         ).trim();
-        const resolvedCaption = (
-          aiMeta?.aiCaption?.trim() ||
+        const resolvedDescription = (
+          aiMeta?.aiDescription?.trim() ||
           (i === 0 ? forgeCaption.trim() : '') ||
           ''
         ).trim();
 
         setForgeStatusText(
+          `[${i + 1}/${stagedFiles.length}] Stage 2/4: Naming "${
+            resolvedTitle || 'Card'
+          }" directly from image description...`
+        );
+        await pause(220);
+
+        // Stage 3: WebP Master Optimization & Genre Classification
+        setForgeStageIndex(2);
+        setForgeProgressPercent(Math.min(96, baseProgress + Math.round(stepSpan * 0.72)));
+        setForgeStatusText(
+          `[${i + 1}/${stagedFiles.length}] Stage 3/4: Optimizing WebP & Classifying ${
+            aiMeta?.predictedCategory || 'Photo'
+          }...`
+        );
+        await pause(200);
+
+        // Stage 4: Combat Stat Synthesis & Card Binding
+        setForgeStageIndex(3);
+        setForgeProgressPercent(Math.min(98, baseProgress + Math.round(stepSpan * 0.9)));
+        setForgeStatusText(
           `[${i + 1}/${stagedFiles.length}] Stage 4/4: Binding "${
-            resolvedTitle || 'AI Relic'
-          }" into ${forgeDestination === 'wild' ? 'The Wilds' : 'Your Deck'}...`
+            resolvedTitle || 'Photo Card'
+          }" to ${forgeDestination === 'wild' ? 'The Wilds' : 'Your Deck'}...`
         );
 
         const formData = new FormData();
@@ -809,8 +836,9 @@ export function App() {
         if (resolvedTitle) {
           formData.append('titles', JSON.stringify({ [fname]: resolvedTitle }));
         }
-        if (resolvedCaption) {
-          formData.append('captions', JSON.stringify({ [fname]: resolvedCaption }));
+        if (resolvedDescription) {
+          formData.append('descriptions', JSON.stringify({ [fname]: resolvedDescription }));
+          formData.append('captions', JSON.stringify({ [fname]: resolvedDescription }));
         }
         formData.append(
           'clientOriginalSizes',
@@ -826,8 +854,19 @@ export function App() {
         const data = await res.json();
 
         if (!res.ok) {
+          if (data.deleted && Array.isArray(data.rejectedNsfw)) {
+            serverDeletedNsfw.push(
+              ...data.rejectedNsfw.map((r: { fileName: string; reason: string }) => ({
+                fileName: r.fileName,
+                reason: r.reason,
+              }))
+            );
+          }
           showToast(data.error || `Failed to forge ${file.name}.`);
         } else {
+          if (Array.isArray(data.rejectedNsfw) && data.rejectedNsfw.length > 0) {
+            serverDeletedNsfw.push(...data.rejectedNsfw);
+          }
           if (Array.isArray(data.forgedCards)) {
             allCreatedCards.push(...data.forgedCards);
           }
@@ -835,6 +874,10 @@ export function App() {
             latestState = data.state;
           }
         }
+      }
+
+      if (serverDeletedNsfw.length > 0) {
+        setNsfwDeletedAlerts((prev) => [...prev, ...serverDeletedNsfw]);
       }
 
       setForgeProgressPercent(100);
@@ -858,15 +901,22 @@ export function App() {
           showToast(
             allCreatedCards.length === 1
               ? `🐾 [${first.category}] "${first.title}" (${first.categoryBonusLabel}) sent to the Wild Rift!`
-              : `🐾 Classified & released ${allCreatedCards.length} AI-Named Photo-Cards into the Wild Rift!`
+              : `🐾 Classified & released ${allCreatedCards.length} Photo-Cards into the Wild Rift!`
           );
         } else {
           showToast(
             allCreatedCards.length === 1
               ? `🛡️ [${first.category}] "${first.title}" (${first.categoryBonusLabel}) bound to @${player?.username}'s Deck!`
-              : `🛡️ Classified & bound ${allCreatedCards.length} AI-Named Photo-Cards to @${player?.username}'s Deck!`
+              : `🛡️ Classified & bound ${allCreatedCards.length} Photo-Cards to @${player?.username}'s Deck!`
           );
         }
+      } else if (serverDeletedNsfw.length > 0) {
+        // Purge rejected staged previews if server blocked all of them as NSFW
+        stagedPreviews.forEach((url) => URL.revokeObjectURL(url));
+        stagedAiPreviews.forEach((p) => URL.revokeObjectURL(p.previewUrl));
+        setStagedFiles([]);
+        setStagedPreviews([]);
+        setStagedAiPreviews([]);
       }
     } catch {
       showToast('Network error during Soul-Lens Forging.');
@@ -2057,7 +2107,7 @@ export function App() {
                   marginBottom: '0.65rem',
                 }}
               >
-                ✨ Instant AI Vision Auto-Naming · 🎨 Live RGB Palette · 📷 EXIF & Genre Detection
+                ✨ Step 1: AI Image Analysis & NSFW Shield · Step 2: Short Name From Description
               </div>
 
               {/* Fun Feature Badges */}
@@ -2070,11 +2120,11 @@ export function App() {
                   marginBottom: '0.9rem',
                 }}
               >
-                <span className="card-pill" style={{ borderColor: 'rgba(214,168,90,0.4)', color: 'var(--gold-bright)' }}>
-                  <Wand2 size={11} /> AI Card Name & Lore
+                <span className="card-pill" style={{ borderColor: 'rgba(248,113,113,0.45)', color: '#f87171' }}>
+                  🛡️ NSFW Auto-Delete
                 </span>
-                <span className="card-pill" style={{ borderColor: 'rgba(56,189,248,0.4)', color: '#38bdf8' }}>
-                  🔬 64×64 Spatial Vision
+                <span className="card-pill" style={{ borderColor: 'rgba(214,168,90,0.4)', color: 'var(--gold-bright)' }}>
+                  <Wand2 size={11} /> Description → Short Name
                 </span>
                 <span className="card-pill" style={{ borderColor: 'rgba(74,222,128,0.4)', color: '#4ade80' }}>
                   ⚡ Auto WebP (&lt;2.8 MB)
@@ -2106,7 +2156,76 @@ export function App() {
               </div>
             </div>
 
-            {/* Instant Client-Side Vision Scanning Indicator */}
+            {/* NSFW Content Detected & Deleted Banner */}
+            {nsfwDeletedAlerts.length > 0 && (
+              <div
+                id="nsfw-deleted-alert"
+                style={{
+                  background: 'rgba(127, 29, 29, 0.28)',
+                  border: '1px solid rgba(248, 113, 113, 0.55)',
+                  borderRadius: 'var(--radius-md)',
+                  padding: '0.85rem 1rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.45rem',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                  }}
+                >
+                  <div
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.72rem',
+                      fontWeight: 700,
+                      color: '#fca5a5',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.04em',
+                    }}
+                  >
+                    🛡️ NSFW Content Detected &amp; Immediately Deleted ({nsfwDeletedAlerts.length})
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-surface"
+                    style={{
+                      minHeight: '26px',
+                      padding: '0.15rem 0.5rem',
+                      fontSize: '0.62rem',
+                      borderColor: 'rgba(248, 113, 113, 0.4)',
+                      color: '#fca5a5',
+                    }}
+                    onClick={() => setNsfwDeletedAlerts([])}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.28rem' }}>
+                  {nsfwDeletedAlerts.map((item, alertIdx) => (
+                    <div
+                      key={`${item.fileName}-${alertIdx}`}
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '0.66rem',
+                        color: '#fecaca',
+                        background: 'rgba(0, 0, 0, 0.28)',
+                        padding: '0.35rem 0.55rem',
+                        borderRadius: '6px',
+                      }}
+                    >
+                      <strong>{item.fileName}</strong> — {item.reason}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Instant Step 1 & Step 2 AI Vision Scanning Indicator */}
             {analyzingPreview && (
               <div className="forge-ritual-chamber" style={{ textAlign: 'center', padding: '1rem' }}>
                 <div
@@ -2120,7 +2239,7 @@ export function App() {
                     gap: '0.45rem',
                   }}
                 >
-                  <Sparkles size={15} /> Scanning RGB Spectrum, EXIF Optics & Synthesizing AI Card Names...
+                  <Sparkles size={15} /> Step 1: AI Image Analysis &amp; NSFW Check → Step 2: Naming From Description...
                 </div>
                 <div className="forge-progress-track">
                   <div className="forge-progress-fill" style={{ width: '75%' }} />
@@ -2243,19 +2362,19 @@ export function App() {
                   {[
                     {
                       idx: 0,
-                      label: 'Stage 1: Optical EXIF Extraction & WebP Master Optimization (<2.8 MB)',
+                      label: 'Stage 1: AI Image Analysis & NSFW Safety Check',
                     },
                     {
                       idx: 1,
-                      label: 'Stage 2: 64×64 Spatial Vision & Photography Genre Classification',
+                      label: 'Stage 2: Description → Short Card Name Synthesis',
                     },
                     {
                       idx: 2,
-                      label: 'Stage 3: RGB Chromatic Spectrum & Elemental Affinity Synthesis',
+                      label: 'Stage 3: WebP Master Optimization & Photography Genre Classification',
                     },
                     {
                       idx: 3,
-                      label: 'Stage 4: AI Card Identity, Lore & Combat Stat Binding',
+                      label: 'Stage 4: Stat Synthesis & Card Binding',
                     },
                   ].map((step) => {
                     const isDone = forgeStageIndex > step.idx;
@@ -2312,7 +2431,7 @@ export function App() {
                       fontWeight: 700,
                     }}
                   >
-                    ✨ {stagedFiles.length} Photo{stagedFiles.length > 1 ? 's' : ''} Analyzed by AI Vision →{' '}
+                    ✨ {stagedFiles.length} Safe Photo{stagedFiles.length > 1 ? 's' : ''} Ready →{' '}
                     {forgeDestination === 'wild'
                       ? '🐾 Release to the Wild'
                       : '🛡️ Bind to My Deck'}
@@ -2331,54 +2450,35 @@ export function App() {
                     onClick={handleRerollAllAiNames}
                     id="reroll-all-ai-names-btn"
                   >
-                    <RefreshCw size={12} /> 🎲 Re-Roll All AI Names
+                    <RefreshCw size={12} /> 🎲 Cycle Short Names
                   </button>
                 </div>
 
-                {/* AI Naming Theme Vibe Bar */}
+                {/* 2-Step AI Pipeline Banner */}
                 <div
                   style={{
                     background: 'var(--bg-surface)',
                     border: '1px solid var(--border-subtle)',
                     borderRadius: 'var(--radius-sm)',
-                    padding: '0.6rem 0.7rem',
+                    padding: '0.6rem 0.75rem',
                     display: 'flex',
-                    flexDirection: 'column',
-                    gap: '0.4rem',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    flexWrap: 'wrap',
                   }}
                 >
+                  <Wand2 size={13} style={{ color: 'var(--gold-bright)', flexShrink: 0 }} />
                   <div
                     style={{
                       fontFamily: 'var(--font-mono)',
                       fontSize: '0.62rem',
                       color: 'var(--text-secondary)',
-                      textTransform: 'uppercase',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.35rem',
+                      lineHeight: 1.4,
                     }}
                   >
-                    <Wand2 size={12} style={{ color: 'var(--gold-bright)' }} /> AI Card Naming Style Vibe:
-                  </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
-                    {(
-                      [
-                        { id: 'auto', label: '✨ Auto Vision AI' },
-                        { id: 'mythic', label: '👑 Mythic Fantasy' },
-                        { id: 'cyber', label: '⚡ Cyber-Optic' },
-                        { id: 'primal', label: '🌿 Primal Wild' },
-                        { id: 'arcane', label: '🔮 Arcane Relic' },
-                      ] as { id: AiNamingTheme; label: string }[]
-                    ).map((t) => (
-                      <button
-                        key={t.id}
-                        type="button"
-                        className={`ai-theme-pill ${aiNamingTheme === t.id ? 'active' : ''}`}
-                        onClick={() => handleChangeAiNamingTheme(t.id)}
-                      >
-                        {t.label}
-                      </button>
-                    ))}
+                    <strong style={{ color: '#4ade80' }}>Step 1:</strong> AI analyzes image &amp; deletes NSFW{' '}
+                    <span style={{ color: 'var(--gold-bright)' }}>→</span>{' '}
+                    <strong style={{ color: 'var(--gold-bright)' }}>Step 2:</strong> Derives short card name solely from the description
                   </div>
                 </div>
 
@@ -2423,6 +2523,20 @@ export function App() {
                             }}
                           >
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
+                              <span
+                                className="card-pill"
+                                style={{
+                                  borderColor: 'rgba(74,222,128,0.55)',
+                                  color: '#4ade80',
+                                }}
+                                title={
+                                  meta.visionProvider
+                                    ? `Analyzed via ${meta.visionProvider}`
+                                    : 'NSFW check passed'
+                                }
+                              >
+                                ✓ NSFW Cleared · AI Vision Safe
+                              </span>
                               <span
                                 className="card-pill"
                                 style={{
@@ -2536,7 +2650,55 @@ export function App() {
                         </div>
                       </div>
 
-                      {/* AI Auto-Generated Card Name Input + 1-Tap Re-Roll + Suggestion Chips */}
+                      {/* Step 1 · AI Image Description (Editable) */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            gap: '0.4rem',
+                            flexWrap: 'wrap',
+                          }}
+                        >
+                          <label
+                            style={{
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: '0.62rem',
+                              textTransform: 'uppercase',
+                              color: '#38bdf8',
+                              fontWeight: 700,
+                            }}
+                          >
+                            Step 1 · AI Image Description
+                          </label>
+                          <button
+                            type="button"
+                            className="btn btn-surface"
+                            style={{
+                              minHeight: '24px',
+                              padding: '0.12rem 0.48rem',
+                              fontSize: '0.61rem',
+                              borderColor: 'rgba(56,189,248,0.4)',
+                              color: '#38bdf8',
+                            }}
+                            onClick={() => void handleRegenerateNameFromDescription(idx)}
+                            id={idx === 0 ? 'name-from-description-btn' : undefined}
+                          >
+                            <Wand2 size={10} /> ✨ Name from Description
+                          </button>
+                        </div>
+                        <textarea
+                          className="form-input"
+                          rows={2}
+                          style={{ fontSize: '13.5px', padding: '0.48rem 0.7rem', resize: 'vertical' }}
+                          value={meta.aiDescription}
+                          onChange={(e) => handleUpdateStagedPhotoDescription(idx, e.target.value)}
+                          id={idx === 0 ? 'forge-image-description-input' : undefined}
+                        />
+                      </div>
+
+                      {/* Step 2 · Short Card Name (Derived Strictly From Description) */}
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
                         <div
                           style={{
@@ -2557,7 +2719,7 @@ export function App() {
                               gap: '0.3rem',
                             }}
                           >
-                            <Sparkles size={11} /> AI-Generated Card Name (Editable)
+                            <Sparkles size={11} /> Step 2 · Short Card Name (From Description)
                           </label>
                           <button
                             type="button"
@@ -2572,7 +2734,7 @@ export function App() {
                             onClick={() => handleRerollPhotoAiName(idx)}
                             id={idx === 0 ? 'reroll-ai-name-btn' : undefined}
                           >
-                            <RefreshCw size={11} /> ✨ Re-Roll Name
+                            <RefreshCw size={11} /> ✨ Re-Roll
                           </button>
                         </div>
 
@@ -2585,7 +2747,7 @@ export function App() {
                           id={idx === 0 ? 'forge-card-title-input' : undefined}
                         />
 
-                        {/* Clickable AI Name Suggestion Chips */}
+                        {/* Clickable Short Card Name Suggestion Chips */}
                         <div
                           style={{
                             display: 'flex',
@@ -2607,48 +2769,6 @@ export function App() {
                             </button>
                           ))}
                         </div>
-                      </div>
-
-                      {/* AI Auto-Generated Lore / Field Note Input + Re-Roll */}
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.28rem' }}>
-                        <div
-                          style={{
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                            gap: '0.4rem',
-                          }}
-                        >
-                          <label
-                            style={{
-                              fontFamily: 'var(--font-mono)',
-                              fontSize: '0.62rem',
-                              textTransform: 'uppercase',
-                              color: 'var(--text-secondary)',
-                            }}
-                          >
-                            AI Field Note & Lore Caption
-                          </label>
-                          <button
-                            type="button"
-                            className="btn btn-surface"
-                            style={{
-                              minHeight: '24px',
-                              padding: '0.12rem 0.45rem',
-                              fontSize: '0.6rem',
-                            }}
-                            onClick={() => handleRerollPhotoAiLore(idx)}
-                          >
-                            <RefreshCw size={10} /> ✨ Re-Roll Lore
-                          </button>
-                        </div>
-                        <input
-                          type="text"
-                          className="form-input"
-                          style={{ fontSize: '14px', padding: '0.5rem 0.7rem' }}
-                          value={meta.aiCaption}
-                          onChange={(e) => handleUpdateStagedPhotoCaption(idx, e.target.value)}
-                        />
                       </div>
                     </div>
                   ))}

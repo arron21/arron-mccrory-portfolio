@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
 import { UPLOADS_DIR } from './db.ts';
-import { optimizeUploadedPhoto } from './optimizer.ts';
+import { optimizeUploadedPhoto, deletePhotoFiles } from './optimizer.ts';
 import {
   registerAuthRoutes,
   getSessionUser,
@@ -13,6 +13,10 @@ import {
   type SessionUser,
 } from './auth.ts';
 import { analyzeAndForgeCard } from './cardForge.ts';
+import {
+  analyzeUploadedImageStep1,
+  nameCardFromDescriptionStep2,
+} from './visionAi.ts';
 import {
   getMmoState,
   saveMmoState,
@@ -218,6 +222,83 @@ api.post('/mmo/reset', (_req: Request, res: Response) => {
   res.json({ ok: true, state });
 });
 
+// 2-Step AI Pre-Forge Endpoint:
+// 1) Analyze image -> check NSFW (and immediately delete/discard if NSFW) + return literal description
+// 2) Using JUST the description, generate a short card name relating to the image itself
+api.post(
+  '/mmo/analyze',
+  upload.array('photos', 10),
+  async (req: Request, res: Response) => {
+    try {
+      // Optional text-only Step 2 mode: regenerate short name strictly from provided description
+      if (req.is('application/json') && typeof req.body?.description === 'string') {
+        const desc = req.body.description.trim();
+        if (!desc) {
+          res.status(400).json({ error: 'Image description is required for Step 2 naming.' });
+          return;
+        }
+        const step2 = await nameCardFromDescriptionStep2(desc);
+        res.json({
+          ok: true,
+          description: desc,
+          shortName: step2.shortName,
+          alternatives: step2.alternatives,
+          step2Provider: step2.provider,
+        });
+        return;
+      }
+
+      const files = req.files as Express.Multer.File[] | undefined;
+      if (!files || files.length === 0) {
+        res.status(400).json({ error: 'No photo uploaded for AI analysis.' });
+        return;
+      }
+
+      const results = [];
+      for (const file of files) {
+        // Step 1: Analyze uploaded image + screen for NSFW
+        const step1 = await analyzeUploadedImageStep1(file.buffer, file.originalname);
+        if (step1.isNsfw) {
+          // Immediately purge buffer reference — never store NSFW uploads
+          file.buffer.fill(0);
+          results.push({
+            fileName: file.originalname,
+            isNsfw: true,
+            deleted: true,
+            nsfwScore: step1.nsfwScore,
+            nsfwReason: step1.nsfwReason,
+            description: '',
+            shortName: '',
+            alternatives: [],
+            step1Provider: step1.provider,
+          });
+          continue;
+        }
+
+        // Step 2: Using JUST the description from Step 1, generate a short name related to the image
+        const step2 = await nameCardFromDescriptionStep2(step1.description);
+        results.push({
+          fileName: file.originalname,
+          isNsfw: false,
+          deleted: false,
+          nsfwScore: step1.nsfwScore,
+          nsfwReason: '',
+          description: step1.description,
+          shortName: step2.shortName,
+          alternatives: step2.alternatives,
+          step1Provider: step1.provider,
+          step2Provider: step2.provider,
+        });
+      }
+
+      res.json({ ok: true, results });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to analyze image';
+      res.status(500).json({ error: msg });
+    }
+  }
+);
+
 // Forge Photo(s) into Collectible Combat Cards (Either Bound to Player Deck OR Sent to the Wild!)
 api.post(
   '/mmo/forge',
@@ -259,6 +340,15 @@ api.post(
         }
       }
 
+      let clientDescriptions: Record<string, string> = {};
+      if (req.body.descriptions) {
+        try {
+          clientDescriptions = JSON.parse(req.body.descriptions);
+        } catch {
+          clientDescriptions = {};
+        }
+      }
+
       let clientOriginalSizes: Record<string, number> = {};
       if (req.body.clientOriginalSizes) {
         try {
@@ -289,14 +379,40 @@ api.post(
       }
 
       const forgedCards: MmoCard[] = [];
+      const rejectedNsfw: Array<{
+        fileName: string;
+        deleted: boolean;
+        reason: string;
+        score: number;
+      }> = [];
 
       for (const file of files) {
+        // STEP 1: Analyze uploaded image FIRST to detect NSFW and immediately delete/purge if NSFW
+        const step1 = await analyzeUploadedImageStep1(file.buffer, file.originalname);
+        if (step1.isNsfw) {
+          // Immediately wipe uploaded buffer and ensure nothing is saved on disk or in state
+          file.buffer.fill(0);
+          rejectedNsfw.push({
+            fileName: file.originalname,
+            deleted: true,
+            reason: step1.nsfwReason || 'NSFW content detected and deleted.',
+            score: step1.nsfwScore,
+          });
+          continue;
+        }
+
         const cardId = createNewMmoCardId();
-        const opt = await optimizeUploadedPhoto(cardId, file.buffer, file.originalname, {
-          webpQuality: 82,
-          avifQuality: 68,
-          keepOriginals: false,
-        });
+        let opt;
+        try {
+          opt = await optimizeUploadedPhoto(cardId, file.buffer, file.originalname, {
+            webpQuality: 82,
+            avifQuality: 68,
+            keepOriginals: false,
+          });
+        } catch (optErr) {
+          await deletePhotoFiles(cardId, '{}');
+          throw optErr;
+        }
 
         const cExif = clientExifMap[file.originalname] || {};
         const mergedExif = {
@@ -309,8 +425,17 @@ api.post(
           takenAt: opt.exif.takenAt || cExif.takenAt || '',
         };
 
-        const hintText = `${file.originalname} ${customTitles[file.originalname] || ''} ${
-          customCaptions[file.originalname] || ''
+        const activeDescription = (
+          clientDescriptions[file.originalname] ||
+          step1.description ||
+          ''
+        ).trim();
+
+        // STEP 2: Using JUST the image description, generate a short card name that relates to the image itself
+        const step2 = await nameCardFromDescriptionStep2(activeDescription);
+
+        const hintText = `${file.originalname} ${activeDescription} ${
+          customTitles[file.originalname] || ''
         }`;
 
         const forged = await analyzeAndForgeCard(
@@ -336,13 +461,13 @@ api.post(
 
         const cardTitle = (
           (!isGenericCameraCode && rawCustomTitle) ||
-          forged.aiName ||
-          (isWild ? 'Wild Rift Anomaly' : 'Chromatic Relic')
+          step2.shortName ||
+          (isWild ? 'Wild Rift Photo' : 'Photo Capture')
         ).trim();
 
         const defaultCaption = isWild
-          ? `Released into the Wild Rift! ${forged.aiCaption}`
-          : forged.aiCaption;
+          ? `Released into the Wild Rift! ${activeDescription}`
+          : activeDescription;
 
         const cardCaption = (
           customCaptions[file.originalname] || defaultCaption
@@ -445,11 +570,22 @@ api.post(
         }
       }
 
+      if (forgedCards.length === 0 && rejectedNsfw.length > 0) {
+        res.status(422).json({
+          ok: false,
+          deleted: true,
+          rejectedNsfw,
+          error: `NSFW Content Detected & Deleted: ${rejectedNsfw[0].reason}`,
+        });
+        return;
+      }
+
       saveMmoState(state);
       res.status(201).json({
         ok: true,
         destination,
         forgedCards,
+        rejectedNsfw,
         state,
       });
     } catch (err) {

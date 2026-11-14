@@ -1,8 +1,6 @@
 import exifr from 'exifr';
 import type { ExifData, ElementType, PhotoCategory, CardRole } from '../types.ts';
 
-export type AiNamingTheme = 'auto' | 'mythic' | 'cyber' | 'primal' | 'arcane';
-
 export interface StagedPhotoAiPreview {
   fileName: string;
   fileSize: number;
@@ -23,10 +21,12 @@ export interface StagedPhotoAiPreview {
   predictedRole: CardRole;
   predictedBonusLabel: string;
   aiVisualTags: string[];
+  isNsfw: boolean;
+  nsfwReason: string;
+  aiDescription: string;
   aiName: string;
   aiNamePool: string[];
-  aiCaption: string;
-  aiCaptionPool: string[];
+  visionProvider: string;
   rerollIndex: number;
 }
 
@@ -145,36 +145,6 @@ function rgbToHex(r: number, g: number, b: number): string {
   );
 }
 
-function extractMeaningfulFileHint(fileName: string): string | null {
-  const base = fileName
-    .replace(/\.[^/.]+$/, '')
-    .replace(/[-_]+/g, ' ')
-    .trim();
-  if (!base) return null;
-
-  const stopWords = new Set([
-    'img', 'dsc', 'dscf', 'dscn', 'pxl', 'dcim', 'mvi', 'gopr', 'dji', 'sam',
-    'screenshot', 'screen', 'shot', 'photo', 'picture', 'image', 'pic', 'camera',
-    'upload', 'file', 'untitled', 'download', 'whatsapp', 'signal', 'telegram',
-    'copy', 'edit', 'final', 'v1', 'v2', 'new', 'old', 'test', 'temp', 'tmp',
-    'jpeg', 'jpg', 'png', 'webp', 'heic', 'avif', 'raw', 'cr2', 'nef', 'arw',
-    'card', 'the', 'and', 'for', 'with', 'from', 'into',
-  ]);
-
-  const tokens = base
-    .split(/\s+/)
-    .map((w) => w.replace(/[^a-zA-Z]/g, ''))
-    .filter((w) => w.length >= 3 && w.length <= 14)
-    .filter((w) => !stopWords.has(w.toLowerCase()))
-    .filter((w) => !/^[a-f0-9]{6,}$/i.test(w));
-
-  if (tokens.length === 0) return null;
-  return tokens
-    .slice(0, 2)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-    .join(' ');
-}
-
 const CATEGORY_BONUS_SUMMARY: Record<PhotoCategory, { role: CardRole; bonus: string }> = {
   Portrait: { role: 'Striker', bonus: '+8% CRIT · +14% ATK · +8% SPD' },
   Architecture: { role: 'Vanguard', bonus: '+26% DEF · +18% HP (Fortress)' },
@@ -186,171 +156,159 @@ const CATEGORY_BONUS_SUMMARY: Record<PhotoCategory, { role: CardRole; bonus: str
   'Fine Art & Abstract': { role: 'Arcanist', bonus: '+16% ATK · +12% SPD · +5% CRIT' },
 };
 
-export function generateClientAiNamesAndLore(params: {
-  fileName: string;
-  element: ElementType;
-  category: PhotoCategory;
-  role: CardRole;
-  r: number;
-  g: number;
-  b: number;
-  luminance: number;
-  contrast: number;
-  saturation: number;
-  exif: ExifData;
-  theme?: AiNamingTheme;
-}): { aiNamePool: string[]; aiCaptionPool: string[] } {
-  const {
-    fileName,
-    element,
-    category,
-    role,
-    r,
-    g,
-    b,
-    luminance,
-    contrast,
-    saturation,
-    exif,
-    theme = 'auto',
-  } = params;
+/**
+ * Step 2 (Client-side NLP fallback): Derives short 2-4 word card names strictly from
+ * the plain-text visual description of the image itself.
+ */
+export function deriveShortNamesFromDescription(description: string): string[] {
+  const text = description.trim();
+  const lower = text.toLowerCase();
 
-  const seed = Math.abs(
-    r * 37 + g * 23 + b * 13 + luminance * 11 + contrast * 7 + saturation * 5 + fileName.length * 19
-  );
-  const semanticSubject = extractMeaningfulFileHint(fileName);
+  const depictingMatch = text.match(/depicting\s+([a-zA-Z0-9\s-]{3,28})(?:,|\.|$)/i);
+  const hintWords = depictingMatch
+    ? depictingMatch[1]
+        .trim()
+        .split(/\s+/)
+        .slice(0, 3)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+        .join(' ')
+    : null;
 
-  const elementAdjectives: Record<ElementType, string[]> = {
-    Solar: ['Sunforged', 'Aurelian', 'Helios', 'Gilded', 'Solstice', 'Radiant', 'Amber'],
-    Abyssal: ['Trenchborn', 'Pelagic', 'Tidal', 'Sapphire', 'Riptide', 'Fathom', 'Glacial'],
-    Crimson: ['Bloodmoon', 'Scarlet', 'Emberheart', 'Cinnabar', 'Vermilion', 'Pyre', 'Ignis'],
-    Verdant: ['Sylvan', 'Briar', 'Wildwood', 'Emerald', 'Mossbound', 'Canopy', 'Thorn'],
-    Astral: ['Nebula', 'Starlight', 'Celestial', 'Aether', 'Zenith', 'Cosmic', 'Voidborn'],
-    Monochrome: ['Chiaroscuro', 'Obsidian', 'Noir', 'Silverplate', 'Phantom', 'Graphite', 'Ashen'],
-  };
+  let toneWord = 'Natural';
+  if (/\bgolden|amber|sunset|warm\b/.test(lower)) toneWord = 'Golden';
+  else if (/\bocean|blue|azure|sapphire\b/.test(lower)) toneWord = 'Ocean';
+  else if (/\bgreen|emerald|forest|lush\b/.test(lower)) toneWord = 'Emerald';
+  else if (/\bcrimson|red|scarlet|ruby\b/.test(lower)) toneWord = 'Crimson';
+  else if (/\bmonochrome|black-and-white|silver\b/.test(lower)) toneWord = 'Monochrome';
+  else if (/\bviolet|twilight|purple\b/.test(lower)) toneWord = 'Twilight';
+  else if (/\bnight|dark sky|stars\b/.test(lower)) toneWord = 'Midnight';
+  else if (/\bdaylight|bright\b/.test(lower)) toneWord = 'Sunlit';
+  else if (/\bshadow|moody|low-key\b/.test(lower)) toneWord = 'Shadowed';
+  else if (/\bcontrast\b/.test(lower)) toneWord = 'Stark';
 
-  const categoryNouns: Record<PhotoCategory, string[]> = {
-    Portrait: ['Sovereign', 'Valkyrie', 'Oracle', 'Duelist', 'Visage', 'Envoy', 'Mirage'],
-    Architecture: ['Citadel', 'Monolith', 'Bastion', 'Obelisk', 'Spire', 'Sanctum', 'Colossus'],
-    Nature: ['Titan', 'Grovekeeper', 'Behemoth', 'Warden', 'Tempest', 'Wildheart', 'Horizon'],
-    'Still Life': ['Reliquary', 'Chalice', 'Talisman', 'Artifact', 'Chronicle', 'Vessel', 'Curio'],
-    'Street & Action': ['Outrider', 'Ronin', 'Interceptor', 'Strider', 'Vortex', 'Drifter', 'Phantom'],
-    'Macro & Wildlife': ['Stalker', 'Apex', 'Mantis', 'Lynx', 'Predator', 'Fangs', 'Huntress'],
-    'Night & Astro': ['Eclipse', 'Supernova', 'Stargazer', 'Nocturne', 'Pulsar', 'Constellation', 'Comet'],
-    'Fine Art & Abstract': ['Paradox', 'Prism', 'Enigma', 'Tessellation', 'Dreamweaver', 'Chimera', 'Anomaly'],
-  };
-
-  const lightingPrefixes =
-    luminance < 70
-      ? ['Midnight', 'Umbral', 'Nocturnal', 'Shadow']
-      : luminance > 180
-      ? ['High-Noon', 'Daybreak', 'Luminous', 'Halo']
-      : contrast > 60
-      ? ['Razor', 'Stormlit', 'Stark', 'Flash']
-      : saturation > 68
-      ? ['Prismatic', 'Vivid', 'Neon', 'Chromatic']
-      : ['Twilight', 'Velvet', 'Misty', 'Haze'];
-
-  const adj = elementAdjectives[element];
-  const nouns = categoryNouns[category];
-  const light = lightingPrefixes;
-
-  const a1 = adj[seed % adj.length];
-  const a2 = adj[(seed + 2) % adj.length];
-  const a3 = adj[(seed + 4) % adj.length];
-  const n1 = nouns[seed % nouns.length];
-  const n2 = nouns[(seed + 3) % nouns.length];
-  const n3 = nouns[(seed + 5) % nouns.length];
-  const l1 = light[seed % light.length];
-  const l2 = light[(seed + 2) % light.length];
-
-  let pool: string[] = [];
-
-  if (theme === 'mythic') {
-    pool = [
-      semanticSubject ? `${a1} ${semanticSubject}, the ${n1}` : `${a1} ${n1} of ${l1}`,
-      `${l1} ${a2} ${n2}`,
-      `High ${n3} of the ${a3} Crown`,
-      `${a1} Oathkeeper · ${n1}`,
-      `The ${l2} ${semanticSubject || n2}`,
-      `${a2} Ascendant ${n3}`,
-    ];
-  } else if (theme === 'cyber') {
-    const codeNum = ((seed % 89) + 10).toString();
-    pool = [
-      `NEO-${codeNum} // ${a1} ${semanticSubject || n1}`,
-      `${l1} Protocol: ${n2}.EXE`,
-      `Chroma-Unit ${codeNum} [${element.toUpperCase()}]`,
-      `Cyber-${n1} // ${a2} Lens`,
-      `Optic Zero: ${l2} ${semanticSubject || n3}`,
-      `SYNTH-${a3.toUpperCase()} ${role}`,
-    ];
-  } else if (theme === 'primal') {
-    pool = [
-      `Primeval ${a1} ${semanticSubject || n1}`,
-      `${l1} Fang of the ${a2} Wilds`,
-      `Untamed ${semanticSubject || n2} Behemoth`,
-      `${a3} Storm-${n3}`,
-      `Apex ${l2} ${n1}`,
-      `Wildborn ${a1} ${role}`,
-    ];
-  } else if (theme === 'arcane') {
-    pool = [
-      `Sigil of the ${a1} ${semanticSubject || n1}`,
-      `${l1} Grimoire: ${a2} ${n2}`,
-      `Astral Relic of ${semanticSubject || n3}`,
-      `The ${a3} Alchemy ${n1}`,
-      `Runebound ${l2} ${n2}`,
-      `Aether-Forged ${a1} ${role}`,
-    ];
-  } else {
-    // 'auto' blends the best visual telemetry names
-    pool = [
-      semanticSubject ? `${a1} ${semanticSubject}` : `${a1} ${n1}`,
-      semanticSubject ? `${l1} ${semanticSubject} ${n2}` : `${l1} ${a2} ${n2}`,
-      `${a3} ${n3} of ${l1}`,
-      `NEO-${(seed % 89) + 10} // ${a1} ${n1}`,
-      `Sigil of the ${l2} ${semanticSubject || n2}`,
-      `Apex ${a2} ${role}`,
-    ];
-  }
-
-  const opticsSnippet = [exif.focalLength, exif.aperture, exif.shutterSpeed]
-    .filter(Boolean)
-    .join(' · ') || 'direct optical sensor capture';
-
-  const toneDesc =
-    luminance < 72
-      ? 'deep nocturnal shadow telemetry'
-      : luminance > 175
-      ? 'radiant high-key luminance'
-      : contrast > 58
-      ? 'high-contrast chiaroscuro edges'
-      : 'rich chromatic color harmony';
-
-  const bonusInfo = CATEGORY_BONUS_SUMMARY[category].bonus;
-
-  const captions = [
-    `AI Vision Telemetry: ${element} ${category} (${role}) synthesized from ${toneDesc} [${opticsSnippet}]. Grants ${bonusInfo}.`,
-    `Forged through the Soul-Lens from ${toneDesc}. Its ${element} resonance empowers this ${category} ${role} with ${bonusInfo}.`,
-    `Optical Alchemy Record (${opticsSnippet}): A ${element}-aligned ${category} specimen channeling ${toneDesc} for ${bonusInfo}.`,
-    `Field Note: Captured in ${l1.toLowerCase()} light, this ${element} ${role} converts ${category.toLowerCase()} composition into ${bonusInfo}.`,
+  const nounPatterns: Array<{ re: RegExp; alts: string[] }> = [
+    { re: /\b(dog|puppy|retriever|hound)\b/, alts: ['Hound', 'Retriever', 'Companion'] },
+    { re: /\b(cat|kitten|feline)\b/, alts: ['Feline', 'Cat', 'Prowler'] },
+    { re: /\b(bird|eagle|owl|hawk|seagull)\b/, alts: ['Bird', 'Wing', 'Soarer'] },
+    { re: /\b(car|vehicle|motorcycle|bike|train)\b/, alts: ['Cruiser', 'Machine', 'Racer'] },
+    { re: /\b(flower|rose|bloom|blossom|petal)\b/, alts: ['Blossom', 'Bloom', 'Petal'] },
+    { re: /\b(coffee|espresso|latte|drink|cup|glass)\b/, alts: ['Glass', 'Cup', 'Brew'] },
+    { re: /\b(food|dish|plate|cake|meal|pizza|burger)\b/, alts: ['Plate', 'Dish', 'Tabletop'] },
+    { re: /\b(mountain|peak|ridge|cliff|hill)\b/, alts: ['Ridge', 'Peak', 'Summit'] },
+    { re: /\b(beach|shore|wave|ocean|sea|water|lake|river)\b/, alts: ['Shoreline', 'Waters', 'Waves'] },
+    { re: /\b(tree|trees|forest|woods|greenery|foliage|canopy)\b/, alts: ['Canopy', 'Woods', 'Grove'] },
+    { re: /\b(night lights|stars|starry|moon|skyline)\b/, alts: ['Nightlights', 'Skyline', 'Starglow'] },
+    { re: /\b(architectural|building|buildings|bridge|tower|street|city)\b/, alts: ['Skyline', 'Architecture', 'Towers'] },
+    { re: /\b(portrait|person|face|woman|man|child|smile)\b/, alts: ['Portrait', 'Close-Up', 'Silhouette'] },
+    { re: /\b(macro|insect|leaf|texture)\b/, alts: ['Macro Study', 'Detail', 'Close-Up'] },
+    { re: /\b(still life|arranged|object|table)\b/, alts: ['Still Life', 'Study', 'Tabletop'] },
+    { re: /\b(horizon|landscape|scenic|view)\b/, alts: ['Horizon', 'Vista', 'Landscape'] },
   ];
 
-  return {
-    aiNamePool: pool,
-    aiCaptionPool: captions,
-  };
+  let matchedNouns = ['Capture', 'Frame', 'Scene'];
+  for (const entry of nounPatterns) {
+    if (entry.re.test(lower)) {
+      matchedNouns = entry.alts;
+      break;
+    }
+  }
+
+  const stopWords = new Set([
+    'a', 'an', 'the', 'and', 'or', 'of', 'in', 'on', 'with', 'under', 'beneath', 'against',
+    'photograph', 'image', 'photo', 'picture', 'featuring', 'colored', 'tones', 'light',
+    'lighting', 'visual', 'composition', 'even', 'balanced', 'depicting', 'soft', 'focus',
+    'center', 'background', 'blur', 'frame', 'view', 'scene', 'detail', 'object', 'very',
+  ]);
+
+  const descKeywords = text
+    .replace(/[^a-zA-Z\s-]/g, ' ')
+    .split(/\s+/)
+    .map((w) => w.trim())
+    .filter((w) => w.length >= 4 && !stopWords.has(w.toLowerCase()))
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+
+  const alts: string[] = [];
+  if (hintWords) {
+    alts.push(hintWords);
+    alts.push(`${toneWord} ${hintWords}`.split(/\s+/).slice(0, 3).join(' '));
+  }
+  alts.push(`${toneWord} ${matchedNouns[0]}`);
+  alts.push(`${toneWord} ${matchedNouns[1]}`);
+  if (descKeywords.length >= 2) {
+    alts.push(`${descKeywords[0]} ${descKeywords[1]}`);
+  }
+  alts.push(`${matchedNouns[2]} Study`);
+
+  return Array.from(
+    new Set(
+      alts
+        .map((n) => n.split(/\s+/).slice(0, 4).join(' ').trim())
+        .filter((n) => n.length >= 3)
+    )
+  ).slice(0, 4);
 }
 
 /**
- * Performs an instant client-side 48x48 spatial & RGB vision scan on a staged photo
- * so the user immediately sees AI-generated card names, extracted color swatches,
- * predicted photography category, elemental affinity, and visual tags before uploading.
+ * Calls the server's Step 2 endpoint with ONLY the description string to generate
+ * short image-related card names.
+ */
+export async function generateShortNameFromServerDescription(
+  description: string
+): Promise<{ shortName: string; alternatives: string[] }> {
+  try {
+    const res = await fetch('/api/mmo/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.shortName) {
+        return {
+          shortName: data.shortName,
+          alternatives: Array.isArray(data.alternatives)
+            ? data.alternatives
+            : [data.shortName],
+        };
+      }
+    }
+  } catch {
+    // Fallback cleanly below
+  }
+  const alts = deriveShortNamesFromDescription(description);
+  return { shortName: alts[0] || 'Photo Capture', alternatives: alts };
+}
+
+/**
+ * Builds a small (<80KB) 512px JPEG file for fast Step 1 server AI analysis & NSFW check.
+ */
+async function buildInspectionFile(file: File, img: HTMLImageElement): Promise<File> {
+  const maxDim = 512;
+  const origW = img.naturalWidth || img.width || 512;
+  const origH = img.naturalHeight || img.height || 512;
+  const scale = Math.min(1, maxDim / Math.max(origW, origH));
+  const w = Math.max(1, Math.round(origW * scale));
+  const h = Math.max(1, Math.round(origH * scale));
+
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d');
+  if (!ctx) return file;
+  ctx.drawImage(img, 0, 0, w, h);
+  const blob = await canvasToBlob(c, 'image/jpeg', 0.78);
+  if (!blob) return file;
+  return new File([blob], file.name, { type: 'image/jpeg' });
+}
+
+/**
+ * Step 1 + Step 2 Pre-Forge Scanner:
+ * 1) Extracts fast client visual telemetry & uploads a tiny 512px inspection image to /api/mmo/analyze
+ *    to run Step 1 (NSFW screening + visual image description).
+ * 2) Uses ONLY the Step 1 image description to obtain a short image-related card name.
  */
 export async function analyzeStagedPhotoPreview(
-  file: File,
-  theme: AiNamingTheme = 'auto'
+  file: File
 ): Promise<StagedPhotoAiPreview> {
   const previewUrl = URL.createObjectURL(file);
   const exif = await extractClientExif(file);
@@ -511,20 +469,53 @@ export async function analyzeStagedPhotoPreview(
       aiVisualTags.push(`📷 ${[exif.focalLength, exif.aperture].filter(Boolean).join(' ')}`);
     }
 
-    const { aiNamePool, aiCaptionPool } = generateClientAiNamesAndLore({
-      fileName: file.name,
-      element: predictedElement,
-      category: predictedCategory,
-      role: predictedRole,
-      r,
-      g,
-      b,
-      luminance,
-      contrast,
-      saturation,
-      exif,
-      theme,
-    });
+    // Build fallback literal description in case offline / network error
+    const toneStr =
+      luminance < 68
+        ? 'moody low-key shadows'
+        : luminance > 180
+        ? 'bright daylight highlights'
+        : r > b + 28
+        ? 'warm golden tones'
+        : b > r + 18
+        ? 'cool blue tones'
+        : 'balanced natural tones';
+    let aiDescription = `A ${predictedCategory.toLowerCase()} photograph with ${toneStr}.`;
+    let isNsfw = false;
+    let nsfwReason = '';
+    let visionProvider = 'local-vision';
+    let aiNamePool = deriveShortNamesFromDescription(aiDescription);
+
+    try {
+      const inspectionFile = await buildInspectionFile(file, img);
+      const fd = new FormData();
+      fd.append('photos', inspectionFile);
+      const analyzeRes = await fetch('/api/mmo/analyze', {
+        method: 'POST',
+        body: fd,
+      });
+      if (analyzeRes.ok) {
+        const analyzeJson = await analyzeRes.json();
+        const first = Array.isArray(analyzeJson.results) ? analyzeJson.results[0] : null;
+        if (first) {
+          isNsfw = Boolean(first.isNsfw);
+          nsfwReason = String(first.nsfwReason || '');
+          if (first.description) {
+            aiDescription = String(first.description);
+          }
+          if (Array.isArray(first.alternatives) && first.alternatives.length > 0) {
+            aiNamePool = first.alternatives;
+          } else if (first.shortName) {
+            aiNamePool = [String(first.shortName)];
+          } else {
+            aiNamePool = deriveShortNamesFromDescription(aiDescription);
+          }
+          visionProvider = String(first.step1Provider || 'server-vision');
+        }
+      }
+    } catch {
+      // Keep local description & short names if offline
+    }
 
     return {
       fileName: file.name,
@@ -546,17 +537,17 @@ export async function analyzeStagedPhotoPreview(
       predictedRole,
       predictedBonusLabel,
       aiVisualTags: aiVisualTags.slice(0, 4),
-      aiName: aiNamePool[0],
+      isNsfw,
+      nsfwReason,
+      aiDescription,
+      aiName: aiNamePool[0] || 'Photo Capture',
       aiNamePool,
-      aiCaption: aiCaptionPool[0],
-      aiCaptionPool,
+      visionProvider,
       rerollIndex: 0,
     };
   } catch {
-    const fallbackPool = ['Aether Relic', 'Helios Sovereign', 'Obsidian Sentinel', 'Verdant Warden'];
-    const fallbackCaptions = [
-      'AI Vision Telemetry: Synthesized directly from optical sensor frequencies.',
-    ];
+    const fallbackDesc = 'A photograph ready for analysis and naming.';
+    const fallbackPool = deriveShortNamesFromDescription(fallbackDesc);
     return {
       fileName: file.name,
       fileSize: file.size,
@@ -577,10 +568,12 @@ export async function analyzeStagedPhotoPreview(
       predictedRole: 'Arcanist',
       predictedBonusLabel: '+16% ATK · +12% SPD · +5% CRIT',
       aiVisualTags: ['✨ Optical Resonance'],
-      aiName: fallbackPool[0],
+      isNsfw: false,
+      nsfwReason: '',
+      aiDescription: fallbackDesc,
+      aiName: fallbackPool[0] || 'Photo Capture',
       aiNamePool: fallbackPool,
-      aiCaption: fallbackCaptions[0],
-      aiCaptionPool: fallbackCaptions,
+      visionProvider: 'local-vision',
       rerollIndex: 0,
     };
   }
