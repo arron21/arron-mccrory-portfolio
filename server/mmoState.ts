@@ -115,10 +115,20 @@ export interface MmoPlayer {
   isNpc: boolean;
 }
 
+export interface MmoUserCredential {
+  id: string;
+  username: string;
+  displayName: string;
+  faction: FactionId;
+  passwordHash: string;
+  salt: string;
+}
+
 export interface MmoState {
   players: MmoPlayer[];
   cards: MmoCard[];
   posts: MmoFeedPost[];
+  authCredentials?: MmoUserCredential[];
 }
 
 const STATE_KEY = 'mmo_state_v2_nodemo';
@@ -200,6 +210,33 @@ export function listRegisteredAccounts(): MmoUserAccount[] {
   }
 }
 
+function listAllUserCredentials(): MmoUserCredential[] {
+  try {
+    const rows = db
+      .prepare(
+        'SELECT id, username, display_name, faction, password_hash, salt FROM mmo_users ORDER BY created_at ASC'
+      )
+      .all() as Array<{
+      id: string;
+      username: string;
+      display_name: string;
+      faction: FactionId;
+      password_hash: string;
+      salt: string;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      username: r.username,
+      displayName: r.display_name,
+      faction: r.faction || 'Helios',
+      passwordHash: r.password_hash,
+      salt: r.salt,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export function registerMmoAccount(
   usernameRaw: string,
   displayNameRaw: string,
@@ -224,7 +261,7 @@ export function registerMmoAccount(
     .prepare('SELECT id FROM mmo_users WHERE username = ?')
     .get(username) as { id: string } | undefined;
   if (existing) {
-    return { ok: false, error: `Username @${username} is already taken. Try logging in!` };
+    return { ok: false, error: `Username @${username} is already taken. Please log in with your password!` };
   }
 
   const displayName = (displayNameRaw || username).trim();
@@ -254,8 +291,7 @@ export function registerMmoAccount(
 
 export function loginMmoAccount(
   usernameRaw: string,
-  passwordRaw?: string,
-  allowQuickLogin = false
+  passwordRaw?: string
 ): { ok: true; account: MmoUserAccount; player: MmoPlayer } | { ok: false; error: string } {
   const username = usernameRaw
     .trim()
@@ -263,6 +299,9 @@ export function loginMmoAccount(
     .replace(/^@/, '');
   if (!username) {
     return { ok: false, error: 'Please enter your username.' };
+  }
+  if (!passwordRaw) {
+    return { ok: false, error: 'Please enter your password to log in.' };
   }
 
   const row = db
@@ -283,50 +322,15 @@ export function loginMmoAccount(
   const state = getMmoState();
 
   if (!row) {
-    // Check if player exists in state.players (e.g. synced from client after cold start)
-    const statePlayer = state.players.find(
-      (p) => p.username.toLowerCase() === username
-    );
-    if (statePlayer && (allowQuickLogin || passwordRaw)) {
-      const salt = crypto.randomBytes(16).toString('hex');
-      const passToSave = passwordRaw || 'chromarift';
-      const passwordHash = hashPassword(passToSave, salt);
-      db.prepare(
-        `INSERT OR IGNORE INTO mmo_users (id, username, display_name, password_hash, salt, faction)
-         VALUES (?, ?, ?, ?, ?, ?)`
-      ).run(
-        statePlayer.id,
-        statePlayer.username.toLowerCase(),
-        statePlayer.displayName,
-        passwordHash,
-        salt,
-        statePlayer.faction
-      );
-      return {
-        ok: true,
-        account: {
-          id: statePlayer.id,
-          username: statePlayer.username,
-          displayName: statePlayer.displayName,
-          faction: statePlayer.faction,
-        },
-        player: statePlayer,
-      };
-    }
     return {
       ok: false,
-      error: `Account @${username} not found. Switch to "Create Account" to register!`,
+      error: `Account @${username} not found. Switch to "Create New User" to register your own account!`,
     };
   }
 
-  if (!allowQuickLogin) {
-    if (!passwordRaw) {
-      return { ok: false, error: 'Please enter your password.' };
-    }
-    const candidateHash = hashPassword(passwordRaw, row.salt);
-    if (candidateHash !== row.password_hash) {
-      return { ok: false, error: 'Incorrect password for @' + username + '.' };
-    }
+  const candidateHash = hashPassword(passwordRaw, row.salt);
+  if (candidateHash !== row.password_hash) {
+    return { ok: false, error: 'Incorrect password for @' + username + '.' };
   }
 
   const account: MmoUserAccount = {
@@ -396,6 +400,7 @@ function buildInitialMmoState(): MmoState {
     players,
     cards: [],
     posts: [],
+    authCredentials: listAllUserCredentials(),
   };
 }
 
@@ -417,6 +422,7 @@ export function getMmoState(): MmoState {
           : buildInitialMmoState().players,
       cards: parsed.cards || [],
       posts: parsed.posts || [],
+      authCredentials: listAllUserCredentials(),
     };
   } catch {
     const initial = buildInitialMmoState();
@@ -426,6 +432,7 @@ export function getMmoState(): MmoState {
 }
 
 export function saveMmoState(state: MmoState): void {
+  state.authCredentials = listAllUserCredentials();
   db.prepare(
     `INSERT INTO mmo_kv (key, value, updated_at)
      VALUES (?, ?, datetime('now'))
@@ -437,34 +444,33 @@ export function mergeClientStateIntoServer(clientState: Partial<MmoState>): MmoS
   const state = getMmoState();
   let changed = false;
 
+  // 0. Restore salted password hashes from client state if serverless DB cold-started
+  if (Array.isArray(clientState.authCredentials)) {
+    for (const cred of clientState.authCredentials) {
+      if (!cred || !cred.id || !cred.username || !cred.passwordHash || !cred.salt) continue;
+      try {
+        const cleanUser = cred.username.trim().toLowerCase();
+        db.prepare(
+          `INSERT OR IGNORE INTO mmo_users (id, username, display_name, password_hash, salt, faction)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        ).run(
+          cred.id,
+          cleanUser,
+          cred.displayName || cred.username,
+          cred.passwordHash,
+          cred.salt,
+          cred.faction || 'Helios'
+        );
+      } catch {
+        // Ignore duplicate account
+      }
+    }
+  }
+
   // 1. Merge players
   if (Array.isArray(clientState.players)) {
     for (const cp of clientState.players) {
       if (!cp || !cp.id || !cp.username) continue;
-      // Ensure account also exists in mmo_users table
-      try {
-        const cleanUser = cp.username.trim().toLowerCase();
-        const existingAcc = db
-          .prepare('SELECT id FROM mmo_users WHERE username = ?')
-          .get(cleanUser) as { id: string } | undefined;
-        if (!existingAcc) {
-          const salt = crypto.randomBytes(16).toString('hex');
-          const hash = hashPassword('chromarift', salt);
-          db.prepare(
-            `INSERT OR IGNORE INTO mmo_users (id, username, display_name, password_hash, salt, faction)
-             VALUES (?, ?, ?, ?, ?, ?)`
-          ).run(
-            cp.id,
-            cleanUser,
-            cp.displayName || cp.username,
-            hash,
-            salt,
-            cp.faction || 'Helios'
-          );
-        }
-      } catch {
-        // Ignore duplicate account race
-      }
 
       const existing = state.players.find(
         (sp) => sp.id === cp.id || sp.username.toLowerCase() === cp.username.toLowerCase()

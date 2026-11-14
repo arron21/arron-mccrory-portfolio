@@ -21,7 +21,6 @@ import {
   Compass,
   Crown,
   User,
-  Users,
   LogIn,
   LogOut,
   Trash2,
@@ -239,16 +238,16 @@ export function App() {
   }, []);
 
   const player: MmoPlayer | null = useMemo(() => {
-    if (!mmoState) return null;
+    if (!mmoState || !sessionUser) return null;
+    const bySession = mmoState.players.find(
+      (p) =>
+        p.id === sessionUser.id ||
+        p.username.toLowerCase() === sessionUser.username.toLowerCase()
+    );
+    if (bySession) return bySession;
     if (activePlayerId) {
       const byId = mmoState.players.find((p) => p.id === activePlayerId);
       if (byId) return byId;
-    }
-    if (sessionUser) {
-      const bySession = mmoState.players.find(
-        (p) => p.username.toLowerCase() === sessionUser.username.toLowerCase()
-      );
-      if (bySession) return bySession;
     }
     return null;
   }, [mmoState, activePlayerId, sessionUser]);
@@ -2269,7 +2268,7 @@ export function App() {
                   onClick={() => setAuthModalOpen(true)}
                   style={{ minHeight: '34px', padding: '0.3rem 0.65rem', fontSize: '0.72rem' }}
                 >
-                  <Users size={13} /> Switch User
+                  <User size={13} /> My Account
                 </button>
                 <button
                   type="button"
@@ -2908,7 +2907,7 @@ export function App() {
                     onClick={() => setAuthModalOpen(true)}
                     style={{ minHeight: '34px', padding: '0.3rem 0.65rem', fontSize: '0.72rem' }}
                   >
-                    <Users size={13} /> Switch / Create User
+                    <User size={13} /> My Account
                   </button>
                   <button
                     type="button"

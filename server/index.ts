@@ -87,20 +87,6 @@ function resolveAuthenticatedOrHeaderPlayer(
     });
   }
 
-  const headerPlayerId = (
-    (req.headers['x-player-id'] as string | undefined) ||
-    (req.body?.playerId as string | undefined) ||
-    ''
-  ).trim();
-  if (headerPlayerId) {
-    const found = state.players.find((p) => p.id === headerPlayerId);
-    if (found) return found;
-    const regAcc = listRegisteredAccounts().find((a) => a.id === headerPlayerId);
-    if (regAcc) {
-      return ensurePlayerInState(state, regAcc);
-    }
-  }
-
   return null;
 }
 
@@ -180,15 +166,14 @@ api.post('/mmo/auth/register', (req: Request, res: Response) => {
   });
 });
 
-// Log In to an Existing MMO Player Account
+// Log In to an Existing MMO Player Account (Requires Username & Password)
 api.post('/mmo/auth/login', (req: Request, res: Response) => {
-  const { username, password, quickLogin } = (req.body || {}) as {
+  const { username, password } = (req.body || {}) as {
     username?: string;
     password?: string;
-    quickLogin?: boolean;
   };
 
-  const result = loginMmoAccount(username || '', password, Boolean(quickLogin));
+  const result = loginMmoAccount(username || '', password);
   if (!result.ok) {
     res.status(401).json({ error: result.error });
     return;

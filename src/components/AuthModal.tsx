@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import {
-  User,
   LogIn,
   UserPlus,
   LogOut,
@@ -24,8 +23,8 @@ interface AuthModalProps {
   standalone?: boolean;
   sessionUser: SessionUser | null;
   currentPlayer: MmoPlayer | null;
-  accounts: MmoUserAccount[];
-  players: MmoPlayer[];
+  accounts?: MmoUserAccount[];
+  players?: MmoPlayer[];
   cards?: MmoCard[];
   onLoginSuccess: (payload: {
     sessionUser: SessionUser | null;
@@ -42,9 +41,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   standalone = false,
   sessionUser,
   currentPlayer,
-  accounts,
-  players,
-  cards = [],
   onLoginSuccess,
 }) => {
   const [mode, setMode] = useState<'login' | 'register'>('login');
@@ -101,38 +97,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
-  const handleQuickLogin = async (targetUsername: string) => {
-    setErrorMsg(null);
-    setSubmitting(true);
-    try {
-      const res = await fetch('/api/mmo/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: targetUsername,
-          quickLogin: true,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setErrorMsg(data.error || 'Could not sign into account.');
-      } else {
-        onLoginSuccess({
-          sessionUser: data.sessionUser,
-          activePlayerId: data.activePlayerId,
-          state: data.state,
-          accounts: data.accounts,
-          message: `Signed in as @${data.sessionUser?.username}! Loaded personal Deck.`,
-        });
-        if (onClose) onClose();
-      }
-    } catch {
-      setErrorMsg('Network error switching account.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   const handleLogout = async () => {
     setSubmitting(true);
     try {
@@ -143,30 +107,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         activePlayerId: null,
         state: data.state,
         accounts: data.accounts,
-        message: 'Logged out. Sign in or create a new user account to access a personal Deck.',
+        message: 'Logged out of your account.',
       });
       if (onClose) onClose();
     } finally {
       setSubmitting(false);
     }
   };
-
-  // Merge accounts list with players list so any registered/synced user is selectable
-  const allKnownAccounts: MmoUserAccount[] = [...accounts];
-  for (const p of players) {
-    if (
-      !allKnownAccounts.some(
-        (a) => a.username.toLowerCase() === p.username.toLowerCase()
-      )
-    ) {
-      allKnownAccounts.push({
-        id: p.id,
-        username: p.username,
-        displayName: p.displayName,
-        faction: p.faction,
-      });
-    }
-  }
 
   const cardContent = (
     <div
@@ -209,12 +156,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 letterSpacing: '0.08em',
               }}
             >
-              Multi-User Photo-Combat MMO · Personal Decks
+              Personal Account Authentication
             </span>
             <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.35rem' }}>
-              {standalone
-                ? 'Log In or Create Your Deck'
-                : 'Switch User / Manage Account'}
+              {standalone ? 'Log In to Your Deck' : 'Your Account'}
             </h2>
           </div>
         </div>
@@ -224,7 +169,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             className="btn btn-surface"
             onClick={onClose}
             style={{ minHeight: '34px', padding: '0.35rem 0.55rem' }}
-            aria-label="Close Login Modal"
+            aria-label="Close Account Modal"
           >
             <X size={15} />
           </button>
@@ -233,9 +178,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
       {standalone && (
         <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-          Every player has their own isolated <strong>Deck of Photo Cards</strong> and{' '}
-          <strong>4-Card Combat Squad</strong>. Log in to your account or create a new
-          account to start uploading your own photos!
+          Every player has their own private <strong>Deck of Photo Cards</strong> and{' '}
+          <strong>4-Card Combat Squad</strong>. Sign in with your username and password or
+          create your own account to start forging cards.
         </p>
       )}
 
@@ -276,7 +221,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 }}
               >
                 {sessionUser
-                  ? '✓ Authenticated Session · Personal Deck Active'
+                  ? '✓ Signed In · Personal Deck Active'
                   : `Order of ${currentPlayer.faction} · Lv.${currentPlayer.level}`}
               </div>
             </div>
@@ -331,7 +276,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             color: mode === 'register' ? '#4ade80' : undefined,
           }}
         >
-          <UserPlus size={14} /> Create New User
+          <UserPlus size={14} /> Create Account
         </button>
       </div>
 
@@ -366,12 +311,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               marginBottom: '0.25rem',
             }}
           >
-            Username Handle
+            Your Username Handle
           </label>
           <input
             type="text"
             className="form-input"
-            placeholder={mode === 'login' ? 'e.g. arron21' : 'e.g. luna_lens'}
+            placeholder={mode === 'login' ? 'Enter your username' : 'Choose a username'}
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             required
@@ -421,7 +366,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <input
             type="password"
             className="form-input"
-            placeholder="Enter password (min 3 chars)"
+            placeholder="Enter your password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
@@ -483,126 +428,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             {submitting
               ? 'Authenticating...'
               : mode === 'register'
-              ? 'Create Account & Start Personal Deck'
-              : 'Log In to My Personal Deck'}
+              ? 'Create Account & Start My Deck'
+              : 'Log In to My Deck'}
           </span>
         </button>
       </form>
-
-      {/* Quick 1-Tap Account Switcher Showing Each User's Personal Deck Card Count */}
-      {allKnownAccounts.length > 0 && (
-        <div
-          style={{
-            borderTop: '1px solid var(--border-subtle)',
-            paddingTop: '0.75rem',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '0.45rem',
-          }}
-        >
-          <span
-            style={{
-              fontFamily: 'var(--font-mono)',
-              fontSize: '0.62rem',
-              color: 'var(--text-muted)',
-              textTransform: 'uppercase',
-            }}
-          >
-            1-Tap Quick Sign-In (Registered Players &amp; Their Decks)
-          </span>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-            {allKnownAccounts.map((acc) => {
-              const isCurrent =
-                currentPlayer &&
-                acc.username.toLowerCase() === currentPlayer.username.toLowerCase();
-              const pObj = players.find(
-                (p) =>
-                  p.id === acc.id ||
-                  p.username.toLowerCase() === acc.username.toLowerCase()
-              );
-              const deckCount = cards.filter(
-                (c) =>
-                  !c.isWild &&
-                  (c.ownerId === acc.id ||
-                    c.ownerHandle?.toLowerCase() === acc.username.toLowerCase())
-              ).length;
-              const squadCount = pObj
-                ? pObj.squadCardIds.filter((cid) =>
-                    cards.some((c) => c.id === cid && !c.isWild)
-                  ).length
-                : 0;
-
-              return (
-                <button
-                  key={acc.id}
-                  type="button"
-                  className="btn btn-surface"
-                  disabled={submitting}
-                  onClick={() => handleQuickLogin(acc.username)}
-                  id={`quick-login-${acc.username}`}
-                  style={{
-                    justifyContent: 'space-between',
-                    padding: '0.5rem 0.7rem',
-                    fontSize: '0.76rem',
-                    borderColor: isCurrent ? 'var(--gold-bright)' : undefined,
-                  }}
-                >
-                  <span
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '0.4rem',
-                      minWidth: 0,
-                    }}
-                  >
-                    <User size={13} style={{ color: 'var(--gold-bright)', flexShrink: 0 }} />
-                    <strong
-                      style={{
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
-                      {acc.displayName}
-                    </strong>
-                    <span
-                      style={{
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: '0.62rem',
-                        color: 'var(--text-secondary)',
-                      }}
-                    >
-                      @{acc.username}
-                    </span>
-                  </span>
-                  <span
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '0.45rem',
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '0.62rem',
-                      flexShrink: 0,
-                    }}
-                  >
-                    <span style={{ color: 'var(--text-secondary)' }}>
-                      🛡️ {deckCount} Cards · {squadCount}/4 Squad
-                    </span>
-                    <span
-                      style={{
-                        color: isCurrent ? '#4ade80' : 'var(--gold-bright)',
-                        fontWeight: 700,
-                      }}
-                    >
-                      {isCurrent ? 'ACTIVE' : 'Sign In →'}
-                    </span>
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 
