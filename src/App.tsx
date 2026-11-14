@@ -605,7 +605,7 @@ export function App() {
         );
       } else if (blocked.length > 0) {
         showToast(
-          `🛡️ Deleted ${blocked.length} NSFW image(s). Named ${safeAi.length} safe photo(s) from AI description!`
+          `🛡️ Deleted ${blocked.length} NSFW image(s). Named ${safeAi.length} safe photo(s) from description!`
         );
       } else {
         showToast(
@@ -773,7 +773,7 @@ export function App() {
         setForgeStageIndex(0);
         setForgeProgressPercent(Math.min(96, baseProgress + Math.round(stepSpan * 0.2)));
         setForgeStatusText(
-          `[${i + 1}/${stagedFiles.length}] Stage 1/4: AI Image Analysis & NSFW Safety Scan...`
+          `[${i + 1}/${stagedFiles.length}] Stage 1/4: Image Analysis & NSFW Safety Scan...`
         );
 
         const prepared = await preparePhotoForUpload(file);
@@ -2095,8 +2095,8 @@ export function App() {
 
               <div style={{ fontFamily: 'var(--font-display)', fontSize: '1.14rem', fontWeight: 700 }}>
                 {forgeDestination === 'wild'
-                  ? 'Drop or Select Photo(s) to AI-Name & Release to the Wild'
-                  : `Drop or Select Photo(s) to AI-Forge into Your Deck (${playerSquad.length}/4 Squad)`}
+                  ? 'Drop or Select Photo(s) to Auto-Name & Release to the Wild'
+                  : `Drop or Select Photo(s) to Forge into Your Deck (${playerSquad.length}/4 Squad)`}
               </div>
               <div
                 style={{
@@ -2107,7 +2107,7 @@ export function App() {
                   marginBottom: '0.65rem',
                 }}
               >
-                ✨ Step 1: AI Image Analysis & NSFW Shield · Step 2: Short Name From Description
+                ✨ Step 1: Image Analysis &amp; NSFW Shield · Step 2: Short Name From Description
               </div>
 
               {/* Fun Feature Badges */}
@@ -2225,7 +2225,7 @@ export function App() {
               </div>
             )}
 
-            {/* Instant Step 1 & Step 2 AI Vision Scanning Indicator */}
+            {/* Instant Step 1 & Step 2 Scanning Indicator */}
             {analyzingPreview && (
               <div className="forge-ritual-chamber" style={{ textAlign: 'center', padding: '1rem' }}>
                 <div
@@ -2239,7 +2239,7 @@ export function App() {
                     gap: '0.45rem',
                   }}
                 >
-                  <Sparkles size={15} /> Step 1: AI Image Analysis &amp; NSFW Check → Step 2: Naming From Description...
+                  <Sparkles size={15} /> Step 1: Image Analysis &amp; NSFW Check → Step 2: Naming From Description...
                 </div>
                 <div className="forge-progress-track">
                   <div className="forge-progress-fill" style={{ width: '75%' }} />
@@ -2362,7 +2362,7 @@ export function App() {
                   {[
                     {
                       idx: 0,
-                      label: 'Stage 1: AI Image Analysis & NSFW Safety Check',
+                      label: 'Stage 1: Image Analysis & NSFW Safety Check',
                     },
                     {
                       idx: 1,
@@ -2454,7 +2454,7 @@ export function App() {
                   </button>
                 </div>
 
-                {/* 2-Step AI Pipeline Banner */}
+                {/* 2-Step Pipeline Banner */}
                 <div
                   style={{
                     background: 'var(--bg-surface)',
@@ -2476,13 +2476,13 @@ export function App() {
                       lineHeight: 1.4,
                     }}
                   >
-                    <strong style={{ color: '#4ade80' }}>Step 1:</strong> AI analyzes image &amp; deletes NSFW{' '}
+                    <strong style={{ color: '#4ade80' }}>Step 1:</strong> Analyzes image &amp; deletes NSFW{' '}
                     <span style={{ color: 'var(--gold-bright)' }}>→</span>{' '}
                     <strong style={{ color: 'var(--gold-bright)' }}>Step 2:</strong> Derives short card name solely from the description
                   </div>
                 </div>
 
-                {/* Per-Photo Pre-Forge AI Telemetry & Naming Cards */}
+                {/* Per-Photo Pre-Forge Telemetry & Naming Cards */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                   {stagedAiPreviews.map((meta, idx) => (
                     <div key={`${meta.fileName}-${idx}`} className="staged-ai-card">
@@ -2529,13 +2529,9 @@ export function App() {
                                   borderColor: 'rgba(74,222,128,0.55)',
                                   color: '#4ade80',
                                 }}
-                                title={
-                                  meta.visionProvider
-                                    ? `Analyzed via ${meta.visionProvider}`
-                                    : 'NSFW check passed'
-                                }
+                                title="Safety check passed"
                               >
-                                ✓ NSFW Cleared · AI Vision Safe
+                                ✓ NSFW Cleared · Safe
                               </span>
                               <span
                                 className="card-pill"
@@ -2627,7 +2623,7 @@ export function App() {
                             </span>
                           </div>
 
-                          {/* Visual AI Telemetry Tags */}
+                          {/* Visual Telemetry Tags */}
                           {meta.aiVisualTags.length > 0 && (
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.28rem' }}>
                               {meta.aiVisualTags.map((tag) => (
@@ -2650,7 +2646,7 @@ export function App() {
                         </div>
                       </div>
 
-                      {/* Step 1 · AI Image Description (Editable) */}
+                      {/* Step 1 · Image Description (Editable) */}
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
                         <div
                           style={{
@@ -2670,7 +2666,7 @@ export function App() {
                               fontWeight: 700,
                             }}
                           >
-                            Step 1 · AI Image Description
+                            Step 1 · Image Description
                           </label>
                           <button
                             type="button"
@@ -2852,10 +2848,10 @@ export function App() {
                   <Sparkles size={16} />
                   <span>
                     {forgeDestination === 'wild'
-                      ? `⚡ Forge & Release ${stagedFiles.length} AI-Named Photo${
+                      ? `⚡ Forge & Release ${stagedFiles.length} Photo${
                           stagedFiles.length > 1 ? 's' : ''
                         } to the Wild`
-                      : `⚡ Forge ${stagedFiles.length} AI-Named Photo${
+                      : `⚡ Forge ${stagedFiles.length} Photo${
                           stagedFiles.length > 1 ? 's' : ''
                         } into My Deck`}
                   </span>
@@ -2900,12 +2896,12 @@ export function App() {
                       }}
                     >
                       {lastForgedMode === 'wild'
-                        ? `🐾 Released ${lastForgedCards.length} AI-Named Photo(s) to the Wild Rift · Stat Reveal`
-                        : `🛡️ Bound ${lastForgedCards.length} AI-Named Photo(s) to Your Deck · Squad (${playerSquad.length}/4)`}
+                        ? `🐾 Released ${lastForgedCards.length} Photo(s) to the Wild Rift · Stat Reveal`
+                        : `🛡️ Bound ${lastForgedCards.length} Photo(s) to Your Deck · Squad (${playerSquad.length}/4)`}
                     </div>
                     <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
                       {lastForgedMode === 'wild'
-                        ? 'These photos were NOT saved to your deck. Their AI-named cards and stats are shown below, and they now roam The Wilds where you can fight them anytime!'
+                        ? 'These photos were NOT saved to your deck. Their forged cards and stats are shown below, and they now roam The Wilds where you can fight them anytime!'
                         : isSquadReady
                         ? 'Your 4-card Squad is complete! You can now fight Wild Photos or PvP Rivals.'
                         : `Upload ${missingSquadCount} more photo(s) to your Deck to complete your 4-card Squad.`}
@@ -2963,7 +2959,7 @@ export function App() {
                                 textTransform: 'uppercase',
                               }}
                             >
-                              ✨ AI Identity: "{fc.title}" · 📸 {fc.category} ({fc.categoryConfidence ?? 90}% Match)
+                              ✨ Card Identity: "{fc.title}" · 📸 {fc.category} ({fc.categoryConfidence ?? 90}% Match)
                             </span>
                             {fc.categoryBonusLabel && (
                               <span

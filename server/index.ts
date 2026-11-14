@@ -330,7 +330,7 @@ api.post(
 
       const files = req.files as Express.Multer.File[] | undefined;
       if (!files || files.length === 0) {
-        res.status(400).json({ error: 'No photo uploaded for AI analysis.' });
+        res.status(400).json({ error: 'No photo uploaded for analysis.' });
         return;
       }
 

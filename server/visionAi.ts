@@ -329,7 +329,7 @@ export async function analyzeUploadedImageStep1(
             return {
               isNsfw: Boolean(parsed.isNsfw),
               nsfwScore: parsed.isNsfw ? 0.95 : 0.02,
-              nsfwReason: String(parsed.nsfwReason || (parsed.isNsfw ? 'Flagged NSFW by Vision AI.' : '')),
+              nsfwReason: String(parsed.nsfwReason || (parsed.isNsfw ? 'Flagged NSFW by safety filter.' : '')),
               description: parsed.description.trim(),
               provider: 'openai-vision',
             };
@@ -372,7 +372,7 @@ export async function analyzeUploadedImageStep1(
             return {
               isNsfw: Boolean(parsed.isNsfw),
               nsfwScore: parsed.isNsfw ? 0.95 : 0.02,
-              nsfwReason: String(parsed.nsfwReason || (parsed.isNsfw ? 'Flagged NSFW by Gemini Vision.' : '')),
+              nsfwReason: String(parsed.nsfwReason || (parsed.isNsfw ? 'Flagged NSFW by safety filter.' : '')),
               description: parsed.description.trim(),
               provider: 'gemini-vision',
             };

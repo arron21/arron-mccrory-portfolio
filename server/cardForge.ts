@@ -898,7 +898,7 @@ export function generateAiCardIdentity(params: {
       ? 'dramatic chiaroscuro contrast'
       : 'balanced chromatic harmony';
 
-  const aiCaption = `AI Vision Telemetry: ${rarity} ${element} ${category} (${role}) forged from ${toneNote} and ${opticsNote}. Grants ${PHOTO_CATEGORY_MODIFIERS[category].bonusLabel}.`;
+  const aiCaption = `Optical Telemetry: ${rarity} ${element} ${category} (${role}) forged from ${toneNote} and ${opticsNote}. Grants ${PHOTO_CATEGORY_MODIFIERS[category].bonusLabel}.`;
 
   return {
     aiName,
