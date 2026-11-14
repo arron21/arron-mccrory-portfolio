@@ -441,6 +441,31 @@ export function mergeClientStateIntoServer(clientState: Partial<MmoState>): MmoS
   if (Array.isArray(clientState.players)) {
     for (const cp of clientState.players) {
       if (!cp || !cp.id || !cp.username) continue;
+      // Ensure account also exists in mmo_users table
+      try {
+        const cleanUser = cp.username.trim().toLowerCase();
+        const existingAcc = db
+          .prepare('SELECT id FROM mmo_users WHERE username = ?')
+          .get(cleanUser) as { id: string } | undefined;
+        if (!existingAcc) {
+          const salt = crypto.randomBytes(16).toString('hex');
+          const hash = hashPassword('chromarift', salt);
+          db.prepare(
+            `INSERT OR IGNORE INTO mmo_users (id, username, display_name, password_hash, salt, faction)
+             VALUES (?, ?, ?, ?, ?, ?)`
+          ).run(
+            cp.id,
+            cleanUser,
+            cp.displayName || cp.username,
+            hash,
+            salt,
+            cp.faction || 'Helios'
+          );
+        }
+      } catch {
+        // Ignore duplicate account race
+      }
+
       const existing = state.players.find(
         (sp) => sp.id === cp.id || sp.username.toLowerCase() === cp.username.toLowerCase()
       );

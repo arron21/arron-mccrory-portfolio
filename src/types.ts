@@ -227,7 +227,7 @@ export interface MmoState {
   cards: MmoCard[];
   posts: MmoFeedPost[];
   sessionUser?: SessionUser | null;
-  activePlayerId?: string;
+  activePlayerId?: string | null;
   accounts?: MmoUserAccount[];
 }
 

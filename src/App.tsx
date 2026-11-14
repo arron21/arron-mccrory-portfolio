@@ -21,7 +21,10 @@ import {
   Compass,
   Crown,
   User,
+  Users,
   LogIn,
+  LogOut,
+  Trash2,
 } from 'lucide-react';
 import {
   formatBytes,
@@ -75,11 +78,12 @@ export function App() {
 
   const [mmoState, setMmoState] = useState<MmoState | null>(null);
   const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
-  const [activePlayerId, setActivePlayerId] = useState<string>(
-    () => getSavedActivePlayerId() || 'player-arron21'
+  const [activePlayerId, setActivePlayerId] = useState<string | null>(() =>
+    getSavedActivePlayerId()
   );
   const [accounts, setAccounts] = useState<MmoUserAccount[]>([]);
   const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [inspectedPlayerId, setInspectedPlayerId] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
@@ -138,9 +142,9 @@ export function App() {
     if (nextState.sessionUser !== undefined) {
       setSessionUser(nextState.sessionUser || null);
     }
-    if (nextState.activePlayerId) {
-      setActivePlayerId(nextState.activePlayerId);
-      setSavedActivePlayerId(nextState.activePlayerId);
+    if (nextState.activePlayerId !== undefined) {
+      setActivePlayerId(nextState.activePlayerId || null);
+      setSavedActivePlayerId(nextState.activePlayerId || null);
     }
     if (Array.isArray(nextState.accounts)) {
       setAccounts(nextState.accounts);
@@ -156,11 +160,16 @@ export function App() {
         // Ignore
       }
 
-      const savedPid = getSavedActivePlayerId() || 'player-arron21';
+      const savedPid = getSavedActivePlayerId();
+      const reqHeaders: Record<string, string> = {};
+      if (savedPid) {
+        reqHeaders['x-player-id'] = savedPid;
+      }
+
       const [localPersisted, res] = await Promise.all([
         loadPersistentMmoState(),
         fetch('/api/mmo/state', {
-          headers: { 'x-player-id': savedPid },
+          headers: reqHeaders,
         }),
       ]);
 
@@ -187,12 +196,15 @@ export function App() {
           });
 
           if (hasMissingCards || hasMissingPosts || hasMissingSquad) {
+            const syncHeaders: Record<string, string> = {
+              'Content-Type': 'application/json',
+            };
+            if (savedPid) {
+              syncHeaders['x-player-id'] = savedPid;
+            }
             const syncRes = await fetch('/api/mmo/sync', {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-player-id': savedPid,
-              },
+              headers: syncHeaders,
               body: JSON.stringify({ state: localPersisted }),
             });
             if (syncRes.ok) {
@@ -228,17 +240,17 @@ export function App() {
 
   const player: MmoPlayer | null = useMemo(() => {
     if (!mmoState) return null;
-    return (
-      mmoState.players.find((p) => p.id === activePlayerId) ||
-      (sessionUser
-        ? mmoState.players.find(
-            (p) => p.username.toLowerCase() === sessionUser.username.toLowerCase()
-          )
-        : undefined) ||
-      mmoState.players.find((p) => p.id === 'player-arron21') ||
-      mmoState.players[0] ||
-      null
-    );
+    if (activePlayerId) {
+      const byId = mmoState.players.find((p) => p.id === activePlayerId);
+      if (byId) return byId;
+    }
+    if (sessionUser) {
+      const bySession = mmoState.players.find(
+        (p) => p.username.toLowerCase() === sessionUser.username.toLowerCase()
+      );
+      if (bySession) return bySession;
+    }
+    return null;
   }, [mmoState, activePlayerId, sessionUser]);
 
   // Cards owned by the player in their personal Deck/Sanctum (excludes Wild cards)
@@ -356,11 +368,73 @@ export function App() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-player-id': player?.id || activePlayerId,
+        'x-player-id': player?.id || activePlayerId || '',
       },
       body: JSON.stringify({
         won: sim.won,
         wildCardIds: enemyUnits.map((u) => u.id),
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.state) syncState(data.state);
+    }
+  };
+
+  // Multi-User PvP: Duel Another Player's Personal Deck / Squad!
+  const handleFightPlayerDeck = async (opponent: MmoPlayer) => {
+    if (!mmoState || !player) return;
+    if (!isSquadReady) {
+      showToast(
+        `Your Squad is incomplete (${playerSquad.length}/${REQUIRED_SQUAD_SIZE})! Upload ${missingSquadCount} more photo(s) to your personal Deck first.`
+      );
+      openForgeWithMode('deck');
+      return;
+    }
+
+    const oppDeckCards = mmoState.cards.filter(
+      (c) => !c.isWild && c.ownerId === opponent.id
+    );
+    const oppSquad = opponent.squadCardIds
+      .map((cid) => oppDeckCards.find((c) => c.id === cid))
+      .filter((c): c is MmoCard => Boolean(c));
+
+    const enemyUnits = (oppSquad.length > 0 ? oppSquad : oppDeckCards).slice(0, 4);
+    if (enemyUnits.length === 0) {
+      showToast(
+        `@${opponent.username} hasn't uploaded any photos to their personal Deck yet!`
+      );
+      return;
+    }
+
+    const opponentTitle = `@${opponent.username}'s Deck (${enemyUnits.length} Photo Card${
+      enemyUnits.length > 1 ? 's' : ''
+    })`;
+
+    const sim = simulateAutoBattle(
+      playerSquad,
+      enemyUnits,
+      opponent.displayName,
+      opponentTitle,
+      false
+    );
+
+    setActiveSimulation(sim);
+    setBattleRewardSummary(
+      sim.won
+        ? `PvP Victory over @${opponent.username}'s Deck! +150 Lumen Dust · +4 Chromatic Shards · +24 ELO`
+        : `Defeated by @${opponent.username}'s Deck · +50 Lumen Dust · Upgrade your cards in My Deck!`
+    );
+
+    const res = await fetch('/api/mmo/battle/record', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-player-id': player.id,
+      },
+      body: JSON.stringify({
+        won: sim.won,
+        opponentPlayerId: opponent.id,
       }),
     });
     if (res.ok) {
@@ -395,7 +469,7 @@ export function App() {
   const handleHypePost = async (postId: string) => {
     const res = await fetch(`/api/mmo/posts/${postId}/hype`, {
       method: 'POST',
-      headers: { 'x-player-id': player?.id || activePlayerId },
+      headers: { 'x-player-id': player?.id || activePlayerId || '' },
     });
     if (res.ok) {
       const data = await res.json();
@@ -411,7 +485,7 @@ export function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-player-id': player?.id || activePlayerId,
+          'x-player-id': player?.id || activePlayerId || '',
         },
         body: JSON.stringify({ vibe }),
       });
@@ -444,7 +518,7 @@ export function App() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-player-id': player?.id || activePlayerId,
+        'x-player-id': player?.id || activePlayerId || '',
       },
       body: JSON.stringify({ text }),
     });
@@ -507,7 +581,7 @@ export function App() {
         formData.append('photos', prepared.uploadFile);
         formData.append('destination', forgeDestination);
         formData.append('shareToFeed', String(forgeShareFeed));
-        formData.append('playerId', player?.id || activePlayerId);
+        formData.append('playerId', player?.id || activePlayerId || '');
         if (
           forgeDestination === 'deck' &&
           forgeEquipSlot !== 'auto' &&
@@ -536,7 +610,7 @@ export function App() {
 
         const res = await fetch('/api/mmo/forge', {
           method: 'POST',
-          headers: { 'x-player-id': player?.id || activePlayerId },
+          headers: { 'x-player-id': player?.id || activePlayerId || '' },
           body: formData,
         });
         const data = await res.json();
@@ -574,8 +648,8 @@ export function App() {
         } else {
           showToast(
             allCreatedCards.length === 1
-              ? `🛡️ [${first.category}] ${first.title} (${first.categoryBonusLabel}) bound to your Deck!`
-              : `🛡️ Classified & bound ${allCreatedCards.length} Photo-Cards to your Deck & Squad!`
+              ? `🛡️ [${first.category}] ${first.title} (${first.categoryBonusLabel}) bound to @${player?.username}'s Deck!`
+              : `🛡️ Classified & bound ${allCreatedCards.length} Photo-Cards to @${player?.username}'s Deck!`
           );
         }
       }
@@ -616,7 +690,7 @@ export function App() {
   const handleReleaseCardToWild = async (card: MmoCard) => {
     const res = await fetch(`/api/mmo/cards/${card.id}/release-wild`, {
       method: 'POST',
-      headers: { 'x-player-id': player?.id || activePlayerId },
+      headers: { 'x-player-id': player?.id || activePlayerId || '' },
     });
     if (res.ok) {
       const data = await res.json();
@@ -624,6 +698,19 @@ export function App() {
       showToast(
         `🐾 Released ${card.title} into the Wild Rift (+60 Lumen, +2 Shards)! You can now fight it in The Wilds.`
       );
+    }
+  };
+
+  // Delete a card from the Player's Personal Deck
+  const handleDeleteDeckCard = async (card: MmoCard) => {
+    const res = await fetch(`/api/mmo/cards/${card.id}`, {
+      method: 'DELETE',
+      headers: { 'x-player-id': player?.id || activePlayerId || '' },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.state) syncState(data.state);
+      showToast(`Removed ${card.title} from @${player?.username}'s personal Deck.`);
     }
   };
 
@@ -637,7 +724,7 @@ export function App() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-player-id': player?.id || activePlayerId,
+        'x-player-id': player?.id || activePlayerId || '',
       },
       body: JSON.stringify({ action, sacrificeCardId }),
     });
@@ -663,7 +750,7 @@ export function App() {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        'x-player-id': player?.id || activePlayerId,
+        'x-player-id': player?.id || activePlayerId || '',
       },
       body: JSON.stringify({ faction }),
     });
@@ -674,7 +761,30 @@ export function App() {
     }
   };
 
-  if (loading || !mmoState || !player) {
+  const handleLogoutNow = async () => {
+    try {
+      const res = await fetch('/api/mmo/auth/logout', { method: 'POST' });
+      const data = await res.json();
+      setSessionUser(null);
+      setActivePlayerId(null);
+      setSavedActivePlayerId(null);
+      if (data.state) {
+        syncState({
+          ...(data.state as MmoState),
+          sessionUser: null,
+          activePlayerId: null,
+          accounts: data.accounts || accounts,
+        });
+      }
+      showToast('Logged out! Log in or create a new user account to access a personal Deck.');
+    } catch {
+      setSessionUser(null);
+      setActivePlayerId(null);
+      setSavedActivePlayerId(null);
+    }
+  };
+
+  if (loading || !mmoState) {
     return (
       <div className="app-shell mobile-shell-frame">
         <div className="mmo-container">
@@ -682,6 +792,113 @@ export function App() {
             Initializing CHROMARIFT Mobile Photo-Combat MMO...
           </p>
         </div>
+      </div>
+    );
+  }
+
+  // Dedicated Multi-User Login & Personal Deck Gate when no user is signed in
+  if (!player) {
+    return (
+      <div
+        className={`app-shell ${
+          mobileShellMode ? 'mobile-shell-frame' : 'wide-shell-frame'
+        }`}
+      >
+        {toast && (
+          <div
+            style={{
+              position: 'fixed',
+              bottom: '1.25rem',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              width: 'calc(100% - 1.5rem)',
+              maxWidth: '440px',
+              zIndex: 1400,
+              background: 'var(--bg-surface)',
+              border: '1px solid var(--gold-bright)',
+              color: 'var(--text-primary)',
+              padding: '0.7rem 0.95rem',
+              borderRadius: 'var(--radius-sm)',
+              boxShadow: 'var(--shadow-card)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.55rem',
+              fontSize: '0.78rem',
+            }}
+          >
+            <CheckCircle2 size={16} style={{ color: 'var(--gold-bright)', flexShrink: 0 }} />
+            <span>{toast}</span>
+          </div>
+        )}
+
+        <header className="mmo-hud-header">
+          <div className="hud-inner">
+            <div className="brand-crest">
+              <div className="brand-emblem">
+                <Swords size={18} />
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div className="brand-title">CHROMARIFT</div>
+                <div className="brand-subtitle">Multi-User Photo-Combat MMO</div>
+              </div>
+            </div>
+            <div className="hud-resources">
+              <button
+                type="button"
+                className="viewport-mode-btn"
+                onClick={() => setMobileShellMode((prev) => !prev)}
+                title="Switch between Mobile Phone Viewport and Wide Responsive Layout"
+              >
+                {mobileShellMode ? <Monitor size={12} /> : <Smartphone size={12} />}
+                <span>{mobileShellMode ? 'Wide' : 'Mobile'}</span>
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main
+          className="mmo-container"
+          style={{
+            paddingTop: '1.1rem',
+            paddingBottom: '2.5rem',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '1rem',
+          }}
+        >
+          <AuthModal
+            isOpen={true}
+            standalone={true}
+            sessionUser={sessionUser}
+            currentPlayer={null}
+            accounts={accounts}
+            players={mmoState.players}
+            cards={mmoState.cards}
+            onLoginSuccess={({
+              sessionUser: nextUser,
+              activePlayerId: nextPid,
+              state: nextState,
+              accounts: nextAccounts,
+              message,
+            }) => {
+              setSessionUser(nextUser);
+              setActivePlayerId(nextPid || null);
+              setSavedActivePlayerId(nextPid || null);
+              if (Array.isArray(nextAccounts)) {
+                setAccounts(nextAccounts);
+              }
+              if (nextState) {
+                syncState({
+                  ...(nextState as MmoState),
+                  sessionUser: nextUser,
+                  activePlayerId: nextPid || null,
+                  accounts: nextAccounts || accounts,
+                });
+              }
+              showToast(message);
+            }}
+          />
+        </main>
       </div>
     );
   }
@@ -1259,7 +1476,11 @@ export function App() {
                             color: card.isWild ? '#f87171' : 'var(--gold-bright)',
                           }}
                         >
-                          {card.isWild ? '🐾 Wild Specimen' : '🛡️ Deck Card'}
+                          {card.isWild
+                            ? '🐾 Wild Specimen'
+                            : card.ownerId === player.id
+                            ? '🛡️ My Deck Card'
+                            : `🛡️ @${card.ownerHandle}'s Deck`}
                         </span>
                       </div>
 
@@ -1297,6 +1518,26 @@ export function App() {
                           >
                             <Swords size={14} />
                             <span>Fight Wild Card</span>
+                          </button>
+                        ) : card.ownerId !== player.id ? (
+                          <button
+                            type="button"
+                            className="btn btn-crimson"
+                            onClick={() => {
+                              const ownerPlayer = mmoState.players.find(
+                                (p) =>
+                                  p.id === card.ownerId ||
+                                  p.username.toLowerCase() ===
+                                    card.ownerHandle?.toLowerCase()
+                              );
+                              if (ownerPlayer) {
+                                void handleFightPlayerDeck(ownerPlayer);
+                              }
+                            }}
+                            style={{ padding: '0.5rem 0.65rem', fontSize: '0.74rem' }}
+                          >
+                            <Swords size={14} />
+                            <span>Duel @{card.ownerHandle}&apos;s Deck</span>
                           </button>
                         ) : (
                           <button
@@ -1980,6 +2221,67 @@ export function App() {
            ========================================================= */}
         {activeTab === 'sanctum' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.15rem' }}>
+            {/* Personal Deck Identity & Multi-User Account Switcher Banner */}
+            <div
+              style={{
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border-gold)',
+                borderRadius: 'var(--radius-md)',
+                padding: '0.85rem 0.95rem',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: '0.6rem',
+              }}
+            >
+              <div>
+                <span
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.62rem',
+                    color: '#4ade80',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.06em',
+                  }}
+                >
+                  ✓ Isolated Personal Photo Deck · Order of {player.faction}
+                </span>
+                <div style={{ fontSize: '0.96rem', fontWeight: 700, marginTop: '0.1rem' }}>
+                  {player.displayName}&apos;s Deck{' '}
+                  <span
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.72rem',
+                      color: 'var(--gold-bright)',
+                    }}
+                  >
+                    (@{player.username} · {playerCards.length} Photo Card
+                    {playerCards.length === 1 ? '' : 's'})
+                  </span>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.4rem' }}>
+                <button
+                  type="button"
+                  className="btn btn-surface"
+                  onClick={() => setAuthModalOpen(true)}
+                  style={{ minHeight: '34px', padding: '0.3rem 0.65rem', fontSize: '0.72rem' }}
+                >
+                  <Users size={13} /> Switch User
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-surface"
+                  onClick={handleLogoutNow}
+                  style={{ minHeight: '34px', padding: '0.3rem 0.65rem', fontSize: '0.72rem' }}
+                >
+                  <LogOut size={13} /> Log Out
+                </button>
+              </div>
+            </div>
+
             {/* Active 4-Card Formation Builder (2x2 Mobile Tactical Grid) */}
             <div
               style={{
@@ -2012,7 +2314,7 @@ export function App() {
                       : `Requires 4 Uploaded Deck Photos (${playerSquad.length}/4)`}
                   </span>
                   <h1 style={{ fontFamily: 'var(--font-display)', fontSize: '1.25rem' }}>
-                    Active Battle Squad
+                    @{player.username}&apos;s Battle Squad
                   </h1>
                 </div>
                 <span className="card-power-badge">⚔ {totalSquadPower}</span>
@@ -2104,7 +2406,7 @@ export function App() {
                 }}
               >
                 <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.25rem' }}>
-                  My Deck Vault ({filteredVaultCards.length})
+                  @{player.username}&apos;s Deck Vault ({filteredVaultCards.length})
                 </h2>
                 <button
                   type="button"
@@ -2164,8 +2466,8 @@ export function App() {
                   }}
                 >
                   <p style={{ color: 'var(--text-secondary)', marginBottom: '0.85rem' }}>
-                    Your Deck Vault has no cards matching this filter yet. Upload photos to build
-                    your 4-card squad!
+                    @{player.username}&apos;s personal Deck Vault has no cards matching this
+                    filter yet. Upload photos to build your 4-card squad!
                   </p>
                   <button
                     type="button"
@@ -2226,7 +2528,7 @@ export function App() {
                               ))}
                             </div>
 
-                            {/* Level Up / Foil Ascend / Soul Fuse / Send to Wild Buttons */}
+                            {/* Level Up / Foil Ascend / Soul Fuse / Send to Wild / Delete Buttons */}
                             <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
                               <button
                                 type="button"
@@ -2267,6 +2569,15 @@ export function App() {
                                 title="Release this card from your Deck into the Wild Rift to fight later"
                               >
                                 <Trees size={13} style={{ color: '#4ade80' }} /> Wild
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-surface"
+                                style={{ padding: '0.45rem 0.55rem', fontSize: '0.72rem' }}
+                                onClick={() => handleDeleteDeckCard(card)}
+                                title="Delete this card from your personal Deck"
+                              >
+                                <Trash2 size={13} style={{ color: '#f87171' }} />
                               </button>
                             </div>
 
@@ -2549,10 +2860,10 @@ export function App() {
                   letterSpacing: '0.1em',
                 }}
               >
-                Lumenmancer Progression & Stat Lab Guide
+                Multi-User Commander Directory &amp; Stat Lab Guide
               </span>
               <h1 style={{ fontFamily: 'var(--font-display)', fontSize: '1.5rem' }}>
-                Commander Record & Codex
+                Players, Personal Decks &amp; Codex
               </h1>
             </div>
 
@@ -2597,7 +2908,15 @@ export function App() {
                     onClick={() => setAuthModalOpen(true)}
                     style={{ minHeight: '34px', padding: '0.3rem 0.65rem', fontSize: '0.72rem' }}
                   >
-                    <LogIn size={13} /> {sessionUser ? 'Switch / Account' : 'Log In / Sign Up'}
+                    <Users size={13} /> Switch / Create User
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-surface"
+                    onClick={handleLogoutNow}
+                    style={{ minHeight: '34px', padding: '0.3rem 0.65rem', fontSize: '0.72rem' }}
+                  >
+                    <LogOut size={13} /> Log Out
                   </button>
                 </div>
               </div>
@@ -2621,7 +2940,7 @@ export function App() {
                   </span>
                 </div>
                 <div>
-                  <span className="stat-box-label">DECK</span>
+                  <span className="stat-box-label">MY DECK</span>
                   <span className="stat-box-val">{playerCards.length}</span>
                 </div>
                 <div>
@@ -2636,6 +2955,182 @@ export function App() {
                     {player.wins}/{player.losses}
                   </span>
                 </div>
+              </div>
+            </div>
+
+            {/* All Registered Players & Their Personal Photo Decks (Multi-User Directory + PvP Duels) */}
+            <div
+              style={{
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border-gold)',
+                borderRadius: 'var(--radius-md)',
+                padding: '1rem',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '0.75rem',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '0.4rem',
+                }}
+              >
+                <div>
+                  <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.15rem' }}>
+                    All Registered Players &amp; Personal Decks ({mmoState.players.length})
+                  </h2>
+                  <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+                    Every user has their own isolated Deck of Photo Cards. Inspect any player&apos;s
+                    deck or challenge their uploaded squad in 4v4 PvP!
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-surface"
+                  onClick={() => setAuthModalOpen(true)}
+                  style={{ minHeight: '34px', padding: '0.3rem 0.65rem', fontSize: '0.72rem' }}
+                >
+                  <Plus size={13} /> New User Account
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                {mmoState.players.map((p) => {
+                  const isMe = p.id === player.id;
+                  const pDeck = mmoState.cards.filter(
+                    (c) => !c.isWild && c.ownerId === p.id
+                  );
+                  const pSquad = p.squadCardIds
+                    .map((cid) => pDeck.find((c) => c.id === cid))
+                    .filter((c): c is MmoCard => Boolean(c));
+                  const pPower = pSquad.reduce((sum, c) => sum + c.powerRating, 0);
+                  const isExpanded = inspectedPlayerId === p.id;
+
+                  return (
+                    <div
+                      key={p.id}
+                      style={{
+                        background: 'var(--bg-surface)',
+                        border: `1px solid ${
+                          isMe ? 'var(--gold-bright)' : 'var(--border-subtle)'
+                        }`,
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '0.75rem',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.6rem',
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          flexWrap: 'wrap',
+                          gap: '0.5rem',
+                        }}
+                      >
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                            <strong style={{ fontSize: '0.9rem' }}>{p.displayName}</strong>
+                            <span
+                              style={{
+                                fontFamily: 'var(--font-mono)',
+                                fontSize: '0.66rem',
+                                color: 'var(--gold-bright)',
+                              }}
+                            >
+                              @{p.username}
+                            </span>
+                            {isMe && (
+                              <span
+                                className="card-pill"
+                                style={{
+                                  borderColor: '#4ade80',
+                                  color: '#4ade80',
+                                  fontSize: '0.56rem',
+                                }}
+                              >
+                                YOU
+                              </span>
+                            )}
+                          </div>
+                          <div
+                            style={{
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: '0.62rem',
+                              color: 'var(--text-secondary)',
+                              marginTop: '0.1rem',
+                            }}
+                          >
+                            Order of {p.faction} · {p.eloRating} ELO · {pDeck.length} Deck Card
+                            {pDeck.length === 1 ? '' : 's'} · {pSquad.length}/4 Squad (⚔ {pPower})
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+                          <button
+                            type="button"
+                            className="btn btn-surface"
+                            style={{ minHeight: '34px', padding: '0.3rem 0.6rem', fontSize: '0.7rem' }}
+                            onClick={() =>
+                              setInspectedPlayerId((prev) => (prev === p.id ? null : p.id))
+                            }
+                          >
+                            <Shield size={12} />{' '}
+                            {isExpanded ? 'Hide Deck' : `View Deck (${pDeck.length})`}
+                          </button>
+                          {!isMe && pDeck.length > 0 && (
+                            <button
+                              type="button"
+                              className="btn btn-crimson"
+                              style={{ minHeight: '34px', padding: '0.3rem 0.6rem', fontSize: '0.7rem' }}
+                              onClick={() => void handleFightPlayerDeck(p)}
+                            >
+                              <Swords size={12} /> Duel @{p.username}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {isExpanded && (
+                        <div
+                          style={{
+                            borderTop: '1px solid var(--border-subtle)',
+                            paddingTop: '0.6rem',
+                          }}
+                        >
+                          {pDeck.length === 0 ? (
+                            <p style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+                              @{p.username} hasn&apos;t uploaded any photos to their personal Deck
+                              yet.
+                            </p>
+                          ) : (
+                            <div className="sanctum-squad-grid">
+                              {pDeck.map((c) => (
+                                <CombatCardView
+                                  key={c.id}
+                                  card={c}
+                                  compact={true}
+                                  onJudgeVibe={handleJudgePhotoVibe}
+                                  slotBadge={
+                                    p.squadCardIds.includes(c.id)
+                                      ? `S${p.squadCardIds.indexOf(c.id) + 1}`
+                                      : undefined
+                                  }
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
@@ -2957,7 +3452,7 @@ export function App() {
             id="nav-tab-leaderboard"
           >
             <Trophy size={19} />
-            <span>Codex</span>
+            <span>Players</span>
           </button>
         </div>
       </nav>
@@ -2979,6 +3474,7 @@ export function App() {
         currentPlayer={player}
         accounts={accounts}
         players={mmoState.players}
+        cards={mmoState.cards}
         onLoginSuccess={({
           sessionUser: nextUser,
           activePlayerId: nextPid,
@@ -2987,7 +3483,7 @@ export function App() {
           message,
         }) => {
           setSessionUser(nextUser);
-          if (nextPid) {
+          if (nextPid !== undefined) {
             setActivePlayerId(nextPid);
             setSavedActivePlayerId(nextPid);
           }
@@ -2998,7 +3494,7 @@ export function App() {
             syncState({
               ...(nextState as MmoState),
               sessionUser: nextUser,
-              activePlayerId: nextPid || activePlayerId,
+              activePlayerId: nextPid !== undefined ? nextPid : activePlayerId,
               accounts: nextAccounts || accounts,
             });
           }

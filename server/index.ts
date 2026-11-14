@@ -71,7 +71,10 @@ const upload = multer({
 const api = express.Router();
 registerAuthRoutes(api);
 
-function resolveRequestPlayer(req: Request, state: MmoState): MmoPlayer {
+function resolveAuthenticatedOrHeaderPlayer(
+  req: Request,
+  state: MmoState
+): MmoPlayer | null {
   const sessionUser = getSessionUser(req);
   if (sessionUser) {
     const playerId = sessionUser.id.startsWith('player-')
@@ -84,14 +87,26 @@ function resolveRequestPlayer(req: Request, state: MmoState): MmoPlayer {
     });
   }
 
-  const headerPlayerId =
+  const headerPlayerId = (
     (req.headers['x-player-id'] as string | undefined) ||
-    (req.body?.playerId as string | undefined);
+    (req.body?.playerId as string | undefined) ||
+    ''
+  ).trim();
   if (headerPlayerId) {
     const found = state.players.find((p) => p.id === headerPlayerId);
     if (found) return found;
+    const regAcc = listRegisteredAccounts().find((a) => a.id === headerPlayerId);
+    if (regAcc) {
+      return ensurePlayerInState(state, regAcc);
+    }
   }
 
+  return null;
+}
+
+function resolveRequestPlayer(req: Request, state: MmoState): MmoPlayer {
+  const explicit = resolveAuthenticatedOrHeaderPlayer(req, state);
+  if (explicit) return explicit;
   return state.players.find((p) => p.id === 'player-arron21') || state.players[0];
 }
 
@@ -99,12 +114,12 @@ function resolveRequestPlayer(req: Request, state: MmoState): MmoPlayer {
 api.get('/mmo/state', (req: Request, res: Response) => {
   const state = getMmoState();
   const sessionUser = getSessionUser(req);
-  const activePlayer = resolveRequestPlayer(req, state);
+  const activePlayer = resolveAuthenticatedOrHeaderPlayer(req, state);
   saveMmoState(state);
   res.json({
     ...state,
     sessionUser,
-    activePlayerId: activePlayer.id,
+    activePlayerId: activePlayer ? activePlayer.id : null,
     accounts: listRegisteredAccounts(),
   });
 });
@@ -114,13 +129,13 @@ api.post('/mmo/sync', (req: Request, res: Response) => {
   const incoming = (req.body?.state || req.body || {}) as Partial<MmoState>;
   const state = mergeClientStateIntoServer(incoming);
   const sessionUser = getSessionUser(req);
-  const activePlayer = resolveRequestPlayer(req, state);
+  const activePlayer = resolveAuthenticatedOrHeaderPlayer(req, state);
   saveMmoState(state);
   res.json({
     ok: true,
     state,
     sessionUser,
-    activePlayerId: activePlayer.id,
+    activePlayerId: activePlayer ? activePlayer.id : null,
     accounts: listRegisteredAccounts(),
   });
 });
@@ -206,6 +221,7 @@ api.post('/mmo/auth/logout', (_req: Request, res: Response) => {
   res.json({
     ok: true,
     sessionUser: null,
+    activePlayerId: null,
     state,
     accounts: listRegisteredAccounts(),
   });
@@ -770,11 +786,38 @@ api.post('/mmo/cards/:id/upgrade', (req: Request, res: Response) => {
   res.json({ ok: true, card, state });
 });
 
-// Record Auto-Battle Outcome against Wild Photo Cards
+// Delete a Card from the Player's Personal Deck
+api.delete('/mmo/cards/:id', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const state = getMmoState();
+  const player = resolveRequestPlayer(req, state);
+  const cardIdx = state.cards.findIndex((c) => c.id === id);
+
+  if (cardIdx === -1) {
+    res.status(404).json({ error: 'Card not found' });
+    return;
+  }
+
+  const card = state.cards[cardIdx];
+  if (card.ownerId !== player.id) {
+    res.status(403).json({ error: 'You can only delete cards from your own personal deck.' });
+    return;
+  }
+
+  state.cards.splice(cardIdx, 1);
+  player.squadCardIds = player.squadCardIds.filter((cid) => cid !== id);
+  state.posts = state.posts.filter((p) => p.cardId !== id);
+
+  saveMmoState(state);
+  res.json({ ok: true, state });
+});
+
+// Record Auto-Battle Outcome against Wild Photo Cards OR Another Player's Personal Deck
 api.post('/mmo/battle/record', (req: Request, res: Response) => {
-  const { won, wildCardIds } = (req.body || {}) as {
+  const { won, wildCardIds, opponentPlayerId } = (req.body || {}) as {
     won: boolean;
     wildCardIds?: string[];
+    opponentPlayerId?: string;
   };
 
   const state = getMmoState();
@@ -788,6 +831,19 @@ api.post('/mmo/battle/record', (req: Request, res: Response) => {
         if (!won) {
           wCard.wildWins = (wCard.wildWins || 0) + 1;
         }
+      }
+    }
+  }
+
+  if (opponentPlayerId) {
+    const opp = state.players.find((p) => p.id === opponentPlayerId);
+    if (opp && opp.id !== player.id) {
+      if (won) {
+        opp.losses += 1;
+        opp.eloRating = Math.max(800, opp.eloRating - 12);
+      } else {
+        opp.wins += 1;
+        opp.eloRating += 18;
       }
     }
   }
