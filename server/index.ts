@@ -24,6 +24,8 @@ import {
   createNewMmoCardId,
   registerMmoAccount,
   loginMmoAccount,
+  requestPhoneVerificationCode,
+  verifyPhoneCodeAndAuthenticate,
   listRegisteredAccounts,
   ensurePlayerInState,
   mergeClientStateIntoServer,
@@ -94,10 +96,19 @@ function resolveAuthenticatedOrHeaderPlayer(
   return null;
 }
 
-function resolveRequestPlayer(req: Request, state: MmoState): MmoPlayer {
-  const explicit = resolveAuthenticatedOrHeaderPlayer(req, state);
-  if (explicit) return explicit;
-  return state.players.find((p) => p.id === 'player-arron21') || state.players[0];
+function requireAuthPlayer(
+  req: Request,
+  res: Response,
+  state: MmoState
+): MmoPlayer | null {
+  const player = resolveAuthenticatedOrHeaderPlayer(req, state);
+  if (!player) {
+    res.status(401).json({
+      error: 'Please sign in with your phone number first.',
+    });
+    return null;
+  }
+  return player;
 }
 
 // Get Full CHROMARIFT MMO State
@@ -130,7 +141,75 @@ api.post('/mmo/sync', (req: Request, res: Response) => {
   });
 });
 
-// Register a New MMO Player Account
+// Phone Verification Step 1: Send 6-Digit SMS Verification Code (Sign Up or Log In)
+api.post('/mmo/auth/phone/send-code', async (req: Request, res: Response) => {
+  try {
+    const { phone, countryCode } = (req.body || {}) as {
+      phone?: string;
+      countryCode?: string;
+    };
+    const result = await requestPhoneVerificationCode(phone || '', countryCode || '+1');
+    if (!result.ok) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to send verification code.';
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Phone Verification Step 2: Verify 6-Digit Code -> Instant Account Creation or Sign In
+api.post('/mmo/auth/phone/verify', (req: Request, res: Response) => {
+  const { phone, countryCode, code, otpToken, displayName, username, faction } = (req.body ||
+    {}) as {
+    phone?: string;
+    countryCode?: string;
+    code?: string;
+    otpToken?: string;
+    displayName?: string;
+    username?: string;
+    faction?: FactionId;
+  };
+
+  const result = verifyPhoneCodeAndAuthenticate({
+    phoneRaw: phone || '',
+    countryCode,
+    codeRaw: code || '',
+    otpToken,
+    displayNameRaw: displayName,
+    usernameRaw: username,
+    factionRaw: faction,
+  });
+
+  if (!result.ok) {
+    res.status(400).json({ error: result.error });
+    return;
+  }
+
+  const sessionUser: SessionUser = {
+    id: result.account.id,
+    name: result.account.displayName,
+    username: result.account.username,
+    email: `${result.account.username}@chromarift.local`,
+    provider: 'local-owner',
+  };
+  createSession(res, sessionUser);
+
+  const state = getMmoState();
+  res.status(result.isNewUser ? 201 : 200).json({
+    ok: true,
+    isNewUser: result.isNewUser,
+    sessionUser,
+    activePlayerId: result.player.id,
+    player: result.player,
+    state,
+    accounts: listRegisteredAccounts(),
+  });
+});
+
+// Legacy Password Registration Endpoint (Kept for backward compatibility)
 api.post('/mmo/auth/register', (req: Request, res: Response) => {
   const { username, displayName, password, faction } = (req.body || {}) as {
     username?: string;
@@ -170,7 +249,7 @@ api.post('/mmo/auth/register', (req: Request, res: Response) => {
   });
 });
 
-// Log In to an Existing MMO Player Account (Requires Username & Password)
+// Legacy Password Login Endpoint (Kept for backward compatibility)
 api.post('/mmo/auth/login', (req: Request, res: Response) => {
   const { username, password } = (req.body || {}) as {
     username?: string;
@@ -216,8 +295,9 @@ api.post('/mmo/auth/logout', (_req: Request, res: Response) => {
   });
 });
 
-// Reset MMO State (Clean Slate)
+// Reset MMO State (Clean Slate Wipe)
 api.post('/mmo/reset', (_req: Request, res: Response) => {
+  res.clearCookie('arron_portfolio_session', { path: '/' });
   const state = resetMmoState();
   res.json({ ok: true, state });
 });
@@ -312,7 +392,8 @@ api.post(
       }
 
       const state = getMmoState();
-      const player = resolveRequestPlayer(req, state);
+      const player = requireAuthPlayer(req, res, state);
+      if (!player) return;
 
       const destination = req.body.destination === 'wild' ? 'wild' : 'deck';
       const isWild = destination === 'wild';
@@ -599,7 +680,8 @@ api.post(
 api.post('/mmo/cards/:id/release-wild', (req: Request, res: Response) => {
   const { id } = req.params;
   const state = getMmoState();
-  const player = resolveRequestPlayer(req, state);
+  const player = requireAuthPlayer(req, res, state);
+  if (!player) return;
   const card = state.cards.find((c) => c.id === id);
 
   if (!card) {
@@ -727,7 +809,8 @@ api.post('/mmo/cards/:id/judge', (req: Request, res: Response) => {
   }
 
   // Reward judging player
-  const player = resolveRequestPlayer(req, state);
+  const player = requireAuthPlayer(req, res, state);
+  if (!player) return;
   player.lumenDust += 10;
   player.xp += 15;
   if (player.xp >= player.level * 200) {
@@ -765,7 +848,8 @@ api.post('/mmo/posts/:id/hype', (req: Request, res: Response) => {
     );
   }
 
-  const player = resolveRequestPlayer(req, state);
+  const player = requireAuthPlayer(req, res, state);
+  if (!player) return;
   player.lumenDust += 15;
 
   saveMmoState(state);
@@ -788,7 +872,8 @@ api.post('/mmo/posts/:id/comment', (req: Request, res: Response) => {
     return;
   }
 
-  const player = resolveRequestPlayer(req, state);
+  const player = requireAuthPlayer(req, res, state);
+  if (!player) return;
   post.comments.push({
     id: `c-${crypto.randomUUID().slice(0, 6)}`,
     authorName: player.displayName,
@@ -811,7 +896,8 @@ api.put('/mmo/player/squad', (req: Request, res: Response) => {
   };
 
   const state = getMmoState();
-  const player = resolveRequestPlayer(req, state);
+  const player = requireAuthPlayer(req, res, state);
+  if (!player) return;
 
   if (Array.isArray(squadCardIds)) {
     // Only allow cards owned by the player (not wild cards)
@@ -841,7 +927,8 @@ api.post('/mmo/cards/:id/upgrade', (req: Request, res: Response) => {
   };
 
   const state = getMmoState();
-  const player = resolveRequestPlayer(req, state);
+  const player = requireAuthPlayer(req, res, state);
+  if (!player) return;
   const card = state.cards.find((c) => c.id === id);
 
   if (!card) {
@@ -911,7 +998,8 @@ api.post('/mmo/cards/:id/upgrade', (req: Request, res: Response) => {
 api.delete('/mmo/cards/:id', (req: Request, res: Response) => {
   const { id } = req.params;
   const state = getMmoState();
-  const player = resolveRequestPlayer(req, state);
+  const player = requireAuthPlayer(req, res, state);
+  if (!player) return;
   const cardIdx = state.cards.findIndex((c) => c.id === id);
 
   if (cardIdx === -1) {
@@ -942,7 +1030,8 @@ api.post('/mmo/battle/record', (req: Request, res: Response) => {
   };
 
   const state = getMmoState();
-  const player = resolveRequestPlayer(req, state);
+  const player = requireAuthPlayer(req, res, state);
+  if (!player) return;
 
   if (Array.isArray(wildCardIds)) {
     for (const wid of wildCardIds) {

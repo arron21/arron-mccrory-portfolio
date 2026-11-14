@@ -219,6 +219,7 @@ export interface MmoUserAccount {
   id: string;
   username: string;
   displayName: string;
+  phoneMasked?: string;
   faction: FactionId;
 }
 

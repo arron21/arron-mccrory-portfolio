@@ -3,9 +3,9 @@ import type { MmoState } from '../types.ts';
 const DB_NAME = 'chromarift_persistent_db';
 const DB_VERSION = 1;
 const STORE_NAME = 'mmo_state_store';
-const STATE_RECORD_KEY = 'chromarift_mmo_state_v2';
-const LOCAL_STORAGE_FALLBACK_KEY = 'chromarift_mmo_state_cache_v2_nodemo';
-const ACTIVE_PLAYER_KEY = 'chromarift_active_player_id_v1';
+const STATE_RECORD_KEY = 'chromarift_mmo_state_v3_clean';
+const LOCAL_STORAGE_FALLBACK_KEY = 'chromarift_mmo_state_cache_v3_clean';
+const ACTIVE_PLAYER_KEY = 'chromarift_active_player_id_v2';
 
 function openIdb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -23,6 +23,29 @@ function openIdb(): Promise<IDBDatabase> {
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error || new Error('IndexedDB open failed'));
   });
+}
+
+async function purgeLegacyClientKeys(): Promise<void> {
+  try {
+    localStorage.removeItem('chromarift_mmo_state_cache_v1');
+    localStorage.removeItem('chromarift_mmo_state_cache_v2_nodemo');
+    localStorage.removeItem('chromarift_active_player_id_v1');
+  } catch {
+    // Ignore storage error
+  }
+  try {
+    const db = await openIdb();
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      store.delete('chromarift_mmo_state_v1');
+      store.delete('chromarift_mmo_state_v2');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  } catch {
+    // Ignore IDB error
+  }
 }
 
 export async function savePersistentMmoState(state: MmoState): Promise<void> {
@@ -49,6 +72,8 @@ export async function savePersistentMmoState(state: MmoState): Promise<void> {
 }
 
 export async function loadPersistentMmoState(): Promise<MmoState | null> {
+  await purgeLegacyClientKeys();
+
   // 1. Try IndexedDB first
   try {
     const db = await openIdb();

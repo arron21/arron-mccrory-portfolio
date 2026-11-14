@@ -1,13 +1,15 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
-  LogIn,
-  UserPlus,
+  Smartphone,
+  ShieldCheck,
   LogOut,
   X,
   Shield,
   CheckCircle2,
   Sparkles,
   Swords,
+  ArrowLeft,
+  RefreshCw,
 } from 'lucide-react';
 import type {
   FactionId,
@@ -35,6 +37,16 @@ interface AuthModalProps {
   }) => void;
 }
 
+const COUNTRY_CODES = [
+  { code: '+1', label: '🇺🇸 +1' },
+  { code: '+44', label: '🇬🇧 +44' },
+  { code: '+61', label: '🇦🇺 +61' },
+  { code: '+81', label: '🇯🇵 +81' },
+  { code: '+49', label: '🇩🇪 +49' },
+  { code: '+33', label: '🇫🇷 +33' },
+  { code: '+52', label: '🇲🇽 +52' },
+];
+
 export const AuthModal: React.FC<AuthModalProps> = ({
   isOpen,
   onClose,
@@ -43,55 +55,109 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   currentPlayer,
   onLoginSuccess,
 }) => {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [username, setUsername] = useState('');
+  const [step, setStep] = useState<'phone' | 'code'>('phone');
+  const [countryCode, setCountryCode] = useState('+1');
+  const [phone, setPhone] = useState('');
+  const [code, setCode] = useState('');
+  const [otpToken, setOtpToken] = useState('');
+  const [maskedPhone, setMaskedPhone] = useState('');
+  const [isExistingUser, setIsExistingUser] = useState(false);
+  const [existingUsername, setExistingUsername] = useState<string | undefined>(undefined);
+  const [devCode, setDevCode] = useState<string | undefined>(undefined);
+  const [deliveryMode, setDeliveryMode] = useState<'sms' | 'dev-preview'>('dev-preview');
+
+  // Optional quick profile fields for first-time players
   const [displayName, setDisplayName] = useState('');
-  const [password, setPassword] = useState('');
   const [faction, setFaction] = useState<FactionId>('Helios');
+
+  const [resendCooldown, setResendCooldown] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const t = setTimeout(() => setResendCooldown((c) => Math.max(0, c - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [resendCooldown]);
+
   if (!isOpen && !standalone) return null;
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSendCode = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setErrorMsg(null);
+    setSubmitting(true);
+
+    try {
+      const res = await fetch('/api/mmo/auth/phone/send-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone: phone.trim(),
+          countryCode,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setErrorMsg(data.error || 'Could not send verification code.');
+      } else {
+        setOtpToken(data.otpToken || '');
+        setMaskedPhone(data.maskedPhone || phone.trim());
+        setIsExistingUser(Boolean(data.isExistingUser));
+        setExistingUsername(data.existingUsername);
+        setDeliveryMode(data.deliveryMode || 'dev-preview');
+        setDevCode(data.devCode);
+        setCode('');
+        setStep('code');
+        setResendCooldown(30);
+      }
+    } catch {
+      setErrorMsg('Network error while sending verification code.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleVerifyCode = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
     setSubmitting(true);
 
     try {
-      const endpoint =
-        mode === 'register' ? '/api/mmo/auth/register' : '/api/mmo/auth/login';
-      const res = await fetch(endpoint, {
+      const res = await fetch('/api/mmo/auth/phone/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          username: username.trim(),
+          phone: phone.trim(),
+          countryCode,
+          code: code.trim(),
+          otpToken,
           displayName: displayName.trim(),
-          password,
           faction,
         }),
       });
       const data = await res.json();
       if (!res.ok) {
-        setErrorMsg(data.error || 'Authentication failed.');
+        setErrorMsg(data.error || 'Verification failed.');
       } else {
         onLoginSuccess({
           sessionUser: data.sessionUser,
           activePlayerId: data.activePlayerId,
           state: data.state,
           accounts: data.accounts,
-          message:
-            mode === 'register'
-              ? `Welcome to CHROMARIFT, @${data.sessionUser?.username}! Your personal Deck of Cards is ready.`
-              : `Logged in as @${data.sessionUser?.username}! Loaded your personal Deck of Cards.`,
+          message: data.isNewUser
+            ? `Phone verified! Welcome to CHROMARIFT, @${data.sessionUser?.username}!`
+            : `Welcome back, @${data.sessionUser?.username}! Personal Deck loaded.`,
         });
-        setUsername('');
-        setPassword('');
+        setPhone('');
+        setCode('');
+        setOtpToken('');
+        setDevCode(undefined);
         setDisplayName('');
+        setStep('phone');
         if (onClose) onClose();
       }
     } catch {
-      setErrorMsg('Network error while connecting to authentication server.');
+      setErrorMsg('Network error while verifying phone code.');
     } finally {
       setSubmitting(false);
     }
@@ -156,10 +222,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 letterSpacing: '0.08em',
               }}
             >
-              Personal Account Authentication
+              Quick Phone Verification
             </span>
             <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.35rem' }}>
-              {standalone ? 'Log In to Your Deck' : 'Your Account'}
+              {step === 'phone' ? 'Sign Up or Log In' : 'Enter 6-Digit Code'}
             </h2>
           </div>
         </div>
@@ -177,10 +243,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       </div>
 
       {standalone && (
-        <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-          Every player has their own private <strong>Deck of Photo Cards</strong> and{' '}
-          <strong>4-Card Combat Squad</strong>. Sign in with your username and password or
-          create your own account to start forging cards.
+        <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+          No passwords required. Enter your phone number to verify in seconds—new players get
+          an instant personal <strong>Deck of Photo Cards</strong> automatically.
         </p>
       )}
 
@@ -221,7 +286,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 }}
               >
                 {sessionUser
-                  ? '✓ Signed In · Personal Deck Active'
+                  ? '✓ Phone Verified · Personal Deck Active'
                   : `Order of ${currentPlayer.faction} · Lv.${currentPlayer.level}`}
               </div>
             </div>
@@ -240,46 +305,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         </div>
       )}
 
-      {/* Mode Switcher: Log In vs Create New User Account */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
-          gap: '0.45rem',
-        }}
-      >
-        <button
-          type="button"
-          className="btn btn-surface"
-          id="auth-tab-login-btn"
-          onClick={() => {
-            setMode('login');
-            setErrorMsg(null);
-          }}
-          style={{
-            borderColor: mode === 'login' ? 'var(--gold-bright)' : undefined,
-            color: mode === 'login' ? 'var(--gold-bright)' : undefined,
-          }}
-        >
-          <LogIn size={14} /> Log In
-        </button>
-        <button
-          type="button"
-          className="btn btn-surface"
-          id="auth-tab-register-btn"
-          onClick={() => {
-            setMode('register');
-            setErrorMsg(null);
-          }}
-          style={{
-            borderColor: mode === 'register' ? '#4ade80' : undefined,
-            color: mode === 'register' ? '#4ade80' : undefined,
-          }}
-        >
-          <UserPlus size={14} /> Create Account
-        </button>
-      </div>
-
       {errorMsg && (
         <div
           style={{
@@ -295,37 +320,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         </div>
       )}
 
-      {/* Login / Register Form */}
-      <form
-        onSubmit={handleSubmit}
-        style={{ display: 'flex', flexDirection: 'column', gap: '0.7rem' }}
-      >
-        <div>
-          <label
-            style={{
-              fontFamily: 'var(--font-mono)',
-              fontSize: '0.63rem',
-              textTransform: 'uppercase',
-              color: 'var(--text-secondary)',
-              display: 'block',
-              marginBottom: '0.25rem',
-            }}
-          >
-            Your Username Handle
-          </label>
-          <input
-            type="text"
-            className="form-input"
-            placeholder={mode === 'login' ? 'Enter your username' : 'Choose a username'}
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            required
-            autoComplete="username"
-            id="auth-username-input"
-          />
-        </div>
-
-        {mode === 'register' && (
+      {/* STEP 1: Enter Phone Number */}
+      {step === 'phone' && (
+        <form
+          onSubmit={handleSendCode}
+          style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}
+        >
           <div>
             <label
               style={{
@@ -333,106 +333,315 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 fontSize: '0.63rem',
                 textTransform: 'uppercase',
                 color: 'var(--text-secondary)',
-                display: 'block',
-                marginBottom: '0.25rem',
-              }}
-            >
-              Display Name
-            </label>
-            <input
-              type="text"
-              className="form-input"
-              placeholder="e.g. Luna Vance"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              id="auth-displayname-input"
-            />
-          </div>
-        )}
-
-        <div>
-          <label
-            style={{
-              fontFamily: 'var(--font-mono)',
-              fontSize: '0.63rem',
-              textTransform: 'uppercase',
-              color: 'var(--text-secondary)',
-              display: 'block',
-              marginBottom: '0.25rem',
-            }}
-          >
-            Password
-          </label>
-          <input
-            type="password"
-            className="form-input"
-            placeholder="Enter your password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-            id="auth-password-input"
-          />
-        </div>
-
-        {mode === 'register' && (
-          <div>
-            <label
-              style={{
-                fontFamily: 'var(--font-mono)',
-                fontSize: '0.63rem',
-                textTransform: 'uppercase',
-                color: 'var(--text-secondary)',
-                display: 'block',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.35rem',
                 marginBottom: '0.3rem',
               }}
             >
-              Starting Faction Order
+              <Smartphone size={12} style={{ color: 'var(--gold-bright)' }} /> Mobile Phone
+              Number
             </label>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(3, 1fr)',
-                gap: '0.35rem',
-              }}
-            >
-              {(['Helios', 'Umbra', 'Prism'] as FactionId[]).map((fac) => (
-                <button
-                  key={fac}
-                  type="button"
-                  className="btn btn-surface"
-                  onClick={() => setFaction(fac)}
-                  style={{
-                    minHeight: '36px',
-                    fontSize: '0.72rem',
-                    borderColor: faction === fac ? 'var(--gold-bright)' : undefined,
-                    color: faction === fac ? 'var(--gold-bright)' : undefined,
-                  }}
-                >
-                  <Shield size={12} /> {fac}
-                </button>
-              ))}
+            <div style={{ display: 'flex', gap: '0.45rem' }}>
+              <select
+                className="form-input"
+                value={countryCode}
+                onChange={(e) => setCountryCode(e.target.value)}
+                aria-label="Country code"
+                style={{ width: '98px', flexShrink: 0, padding: '0.6rem 0.45rem' }}
+                id="auth-country-select"
+              >
+                {COUNTRY_CODES.map((c) => (
+                  <option key={c.label} value={c.code}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel-national"
+                className="form-input"
+                placeholder="(555) 234-5678"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                required
+                id="auth-phone-input"
+                style={{ flex: 1, fontSize: '1rem', letterSpacing: '0.02em' }}
+              />
             </div>
           </div>
-        )}
 
-        <button
-          type="submit"
-          className="btn btn-gold"
-          disabled={submitting}
-          id="auth-submit-btn"
-          style={{ width: '100%', padding: '0.75rem' }}
+          <button
+            type="submit"
+            className="btn btn-gold"
+            disabled={submitting}
+            id="auth-send-code-btn"
+            style={{ width: '100%', padding: '0.8rem', fontSize: '0.9rem' }}
+          >
+            <ShieldCheck size={16} />
+            <span>{submitting ? 'Sending Code...' : 'Send Verification Code →'}</span>
+          </button>
+
+          <div
+            style={{
+              fontFamily: 'var(--font-mono)',
+              fontSize: '0.63rem',
+              color: 'var(--text-muted)',
+              textAlign: 'center',
+            }}
+          >
+            Works for both new sign-ups &amp; returning players · 6-digit SMS verification
+          </div>
+        </form>
+      )}
+
+      {/* STEP 2: Enter 6-Digit SMS Code */}
+      {step === 'code' && (
+        <form
+          onSubmit={handleVerifyCode}
+          style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}
         >
-          <Sparkles size={15} />
-          <span>
-            {submitting
-              ? 'Authenticating...'
-              : mode === 'register'
-              ? 'Create Account & Start My Deck'
-              : 'Log In to My Deck'}
-          </span>
-        </button>
-      </form>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              background: 'var(--bg-surface)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-sm)',
+              padding: '0.55rem 0.7rem',
+              gap: '0.5rem',
+            }}
+          >
+            <div>
+              <div style={{ fontSize: '0.76rem', fontWeight: 700 }}>
+                {isExistingUser && existingUsername
+                  ? `Welcome back, @${existingUsername}`
+                  : 'New Player Instant Sign-Up'}
+              </div>
+              <div
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.64rem',
+                  color: 'var(--text-secondary)',
+                }}
+              >
+                Code sent to {maskedPhone}
+              </div>
+            </div>
+            <button
+              type="button"
+              className="btn btn-surface"
+              style={{ minHeight: '28px', padding: '0.2rem 0.5rem', fontSize: '0.64rem' }}
+              onClick={() => {
+                setStep('phone');
+                setErrorMsg(null);
+              }}
+            >
+              <ArrowLeft size={11} /> Change
+            </button>
+          </div>
+
+          {/* Instant SMS Dev Preview Banner when Twilio keys are not configured */}
+          {deliveryMode === 'dev-preview' && devCode && (
+            <div
+              id="auth-dev-otp-banner"
+              style={{
+                background: 'rgba(20, 83, 45, 0.28)',
+                border: '1px solid rgba(74, 222, 128, 0.5)',
+                borderRadius: 'var(--radius-sm)',
+                padding: '0.55rem 0.75rem',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: '0.5rem',
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.68rem',
+                  color: '#bbf7d0',
+                }}
+              >
+                📱 Verification Code:{' '}
+                <strong style={{ fontSize: '0.88rem', color: '#4ade80', letterSpacing: '0.1em' }}>
+                  {devCode}
+                </strong>
+              </div>
+              <button
+                type="button"
+                className="btn btn-surface"
+                id="auth-autofill-code-btn"
+                style={{
+                  minHeight: '28px',
+                  padding: '0.2rem 0.55rem',
+                  fontSize: '0.64rem',
+                  borderColor: 'rgba(74, 222, 128, 0.5)',
+                  color: '#4ade80',
+                }}
+                onClick={() => setCode(devCode)}
+              >
+                Auto-Fill
+              </button>
+            </div>
+          )}
+
+          <div>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '0.3rem',
+              }}
+            >
+              <label
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.63rem',
+                  textTransform: 'uppercase',
+                  color: 'var(--gold-bright)',
+                }}
+              >
+                6-Digit Verification Code
+              </label>
+              <button
+                type="button"
+                disabled={resendCooldown > 0 || submitting}
+                onClick={() => void handleSendCode()}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: resendCooldown > 0 ? 'var(--text-muted)' : 'var(--gold-bright)',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.62rem',
+                  cursor: resendCooldown > 0 ? 'default' : 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.25rem',
+                }}
+              >
+                <RefreshCw size={10} />
+                {resendCooldown > 0 ? `Resend (${resendCooldown}s)` : 'Resend Code'}
+              </button>
+            </div>
+            <input
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              className="form-input"
+              placeholder="••••••"
+              value={code}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              required
+              autoFocus
+              id="auth-otp-input"
+              style={{
+                textAlign: 'center',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '1.35rem',
+                letterSpacing: '0.38em',
+                fontWeight: 700,
+              }}
+            />
+          </div>
+
+          {/* Optional quick customization ONLY for new players */}
+          {!isExistingUser && (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '0.55rem',
+                paddingTop: '0.2rem',
+                borderTop: '1px solid var(--border-subtle)',
+              }}
+            >
+              <div>
+                <label
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.6rem',
+                    textTransform: 'uppercase',
+                    color: 'var(--text-secondary)',
+                    display: 'block',
+                    marginBottom: '0.22rem',
+                  }}
+                >
+                  Player Name (Optional — auto-created if blank)
+                </label>
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="e.g. Luna Vance"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  id="auth-displayname-input"
+                />
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.6rem',
+                    textTransform: 'uppercase',
+                    color: 'var(--text-secondary)',
+                    display: 'block',
+                    marginBottom: '0.25rem',
+                  }}
+                >
+                  Faction Allegiance
+                </label>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(3, 1fr)',
+                    gap: '0.35rem',
+                  }}
+                >
+                  {(['Helios', 'Umbra', 'Prism'] as FactionId[]).map((fac) => (
+                    <button
+                      key={fac}
+                      type="button"
+                      className="btn btn-surface"
+                      onClick={() => setFaction(fac)}
+                      style={{
+                        minHeight: '34px',
+                        fontSize: '0.72rem',
+                        borderColor: faction === fac ? 'var(--gold-bright)' : undefined,
+                        color: faction === fac ? 'var(--gold-bright)' : undefined,
+                      }}
+                    >
+                      <Shield size={12} /> {fac}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <button
+            type="submit"
+            className="btn btn-gold"
+            disabled={submitting || code.length !== 6}
+            id="auth-verify-submit-btn"
+            style={{ width: '100%', padding: '0.8rem' }}
+          >
+            <Sparkles size={15} />
+            <span>
+              {submitting
+                ? 'Verifying...'
+                : isExistingUser
+                ? 'Verify & Open My Deck'
+                : 'Verify & Start Playing'}
+            </span>
+          </button>
+        </form>
+      )}
     </div>
   );
 
