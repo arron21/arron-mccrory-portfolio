@@ -18,7 +18,7 @@
       "destination": "/api/index"
     },
     {
-      "source": "/((?!assets/|vite\\.svg).*)",
+      "source": "/((?!assets/|starters/|favicon\\.svg|icons\\.svg|vite\\.svg).*)",
       "destination": "/index.html"
     }
   ]

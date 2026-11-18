@@ -30,6 +30,7 @@ interface AuthModalProps {
   cards?: MmoCard[];
   onLoginSuccess: (payload: {
     sessionUser: SessionUser | null;
+    sessionToken?: string | null;
     activePlayerId?: string | null;
     state?: unknown;
     accounts?: MmoUserAccount[];
@@ -141,12 +142,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       } else {
         onLoginSuccess({
           sessionUser: data.sessionUser,
+          sessionToken: data.sessionToken || null,
           activePlayerId: data.activePlayerId,
           state: data.state,
           accounts: data.accounts,
           message: data.isNewUser
-            ? `Phone verified! Welcome to CHROMARIFT, @${data.sessionUser?.username}!`
-            : `Welcome back, @${data.sessionUser?.username}! Personal Deck loaded.`,
+            ? `Phone verified! Welcome to CHROMARIFT, @${data.sessionUser?.username}! Your 4-Card Starter Deck is ready.`
+            : `Welcome back, @${data.sessionUser?.username}! Your Deck & Cards are loaded.`,
         });
         setPhone('');
         setCode('');
@@ -170,6 +172,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       const data = await res.json();
       onLoginSuccess({
         sessionUser: null,
+        sessionToken: null,
         activePlayerId: null,
         state: data.state,
         accounts: data.accounts,

@@ -136,6 +136,7 @@ export interface MmoCard {
   ownerHandle: string;
   ownerFaction: FactionId;
   isWild?: boolean;
+  isStarter?: boolean;
   wildEncounters?: number;
   wildWins?: number;
   title: string;
@@ -158,6 +159,9 @@ export interface MmoCard {
   opticalTrait: string;
   secondaryTrait?: string;
   level: number;
+  xp?: number;
+  battlesFought?: number;
+  battlesWon?: number;
   ascensionTier: number;
   hypeCount: number;
   hp: number;
@@ -180,6 +184,20 @@ export interface MmoCard {
   optimizedSizeBytes: number;
   savingsPercent: number;
   createdAt: string;
+}
+
+export interface DailyMission {
+  id: string;
+  title: string;
+  description: string;
+  metric: 'battles_won' | 'photos_uploaded' | 'cards_leveled' | 'vibes_judged';
+  target: number;
+  progress: number;
+  rewardDust: number;
+  rewardShards: number;
+  rewardXp: number;
+  claimed: boolean;
+  tier?: number;
 }
 
 export interface FeedComment {
@@ -218,6 +236,10 @@ export interface MmoPlayer {
   eloRating: number;
   wins: number;
   losses: number;
+  winStreak?: number;
+  bestWinStreak?: number;
+  starterGranted?: boolean;
+  dailyMissions?: DailyMission[];
   squadCardIds: string[];
   isNpc: boolean;
 }
@@ -244,6 +266,7 @@ export interface MmoState {
   cards: MmoCard[];
   posts: MmoFeedPost[];
   sessionUser?: SessionUser | null;
+  sessionToken?: string | null;
   activePlayerId?: string | null;
   accounts?: MmoUserAccount[];
 }

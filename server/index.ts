@@ -4,11 +4,12 @@ import multer from 'multer';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
-import { UPLOADS_DIR } from './db.ts';
+import { db, UPLOADS_DIR } from './db.ts';
 import { optimizeUploadedPhoto, deletePhotoFiles } from './optimizer.ts';
 import {
   registerAuthRoutes,
   getSessionUser,
+  extractSessionToken,
   createSession,
   type SessionUser,
 } from './auth.ts';
@@ -28,6 +29,13 @@ import {
   verifyPhoneCodeAndAuthenticate,
   listRegisteredAccounts,
   ensurePlayerInState,
+  repairPlayerOwnershipAndSquad,
+  updatePlayerProfile,
+  advancePlayerMission,
+  claimPlayerMission,
+  awardCardBattleXp,
+  levelUpCardOneStep,
+  recomputeCardPower,
   mergeClientStateIntoServer,
   type MmoCard,
   type MmoPlayer,
@@ -77,6 +85,14 @@ const upload = multer({
 const api = express.Router();
 registerAuthRoutes(api);
 
+function sanitizePublicState(state: MmoState): Omit<MmoState, 'authCredentials'> {
+  return {
+    players: state.players,
+    cards: state.cards,
+    posts: state.posts,
+  };
+}
+
 function resolveAuthenticatedOrHeaderPlayer(
   req: Request,
   state: MmoState
@@ -86,11 +102,21 @@ function resolveAuthenticatedOrHeaderPlayer(
     const playerId = sessionUser.id.startsWith('player-')
       ? sessionUser.id
       : `player-${sessionUser.username.toLowerCase()}`;
-    return ensurePlayerInState(state, {
+    try {
+      db.prepare(
+        `INSERT OR IGNORE INTO mmo_users (id, username, display_name, password_hash, salt, faction)
+         VALUES (?, ?, ?, '', '', 'Helios')`
+      ).run(playerId, sessionUser.username.toLowerCase(), sessionUser.name || sessionUser.username);
+    } catch {
+      // Ignore duplicate
+    }
+    const player = ensurePlayerInState(state, {
       id: playerId,
       username: sessionUser.username,
       displayName: sessionUser.name,
     });
+    repairPlayerOwnershipAndSquad(state, player);
+    return player;
   }
 
   return null;
@@ -115,11 +141,13 @@ function requireAuthPlayer(
 api.get('/mmo/state', (req: Request, res: Response) => {
   const state = getMmoState();
   const sessionUser = getSessionUser(req);
+  const sessionToken = sessionUser ? extractSessionToken(req) : null;
   const activePlayer = resolveAuthenticatedOrHeaderPlayer(req, state);
   saveMmoState(state);
   res.json({
-    ...state,
+    ...sanitizePublicState(state),
     sessionUser,
+    sessionToken,
     activePlayerId: activePlayer ? activePlayer.id : null,
     accounts: listRegisteredAccounts(),
   });
@@ -130,12 +158,14 @@ api.post('/mmo/sync', (req: Request, res: Response) => {
   const incoming = (req.body?.state || req.body || {}) as Partial<MmoState>;
   const state = mergeClientStateIntoServer(incoming);
   const sessionUser = getSessionUser(req);
+  const sessionToken = sessionUser ? extractSessionToken(req) : null;
   const activePlayer = resolveAuthenticatedOrHeaderPlayer(req, state);
   saveMmoState(state);
   res.json({
     ok: true,
-    state,
+    state: sanitizePublicState(state),
     sessionUser,
+    sessionToken,
     activePlayerId: activePlayer ? activePlayer.id : null,
     accounts: listRegisteredAccounts(),
   });
@@ -195,16 +225,17 @@ api.post('/mmo/auth/phone/verify', (req: Request, res: Response) => {
     email: `${result.account.username}@chromarift.local`,
     provider: 'local-owner',
   };
-  createSession(res, sessionUser);
+  const sessionToken = createSession(res, sessionUser);
 
   const state = getMmoState();
   res.status(result.isNewUser ? 201 : 200).json({
     ok: true,
     isNewUser: result.isNewUser,
     sessionUser,
+    sessionToken,
     activePlayerId: result.player.id,
     player: result.player,
-    state,
+    state: sanitizePublicState(state),
     accounts: listRegisteredAccounts(),
   });
 });
@@ -236,15 +267,16 @@ api.post('/mmo/auth/register', (req: Request, res: Response) => {
     email: `${result.account.username}@chromarift.local`,
     provider: 'local-owner',
   };
-  createSession(res, sessionUser);
+  const sessionToken = createSession(res, sessionUser);
 
   const state = getMmoState();
   res.status(201).json({
     ok: true,
     sessionUser,
+    sessionToken,
     activePlayerId: result.player.id,
     player: result.player,
-    state,
+    state: sanitizePublicState(state),
     accounts: listRegisteredAccounts(),
   });
 });
@@ -269,15 +301,16 @@ api.post('/mmo/auth/login', (req: Request, res: Response) => {
     email: `${result.account.username}@chromarift.local`,
     provider: 'local-owner',
   };
-  createSession(res, sessionUser);
+  const sessionToken = createSession(res, sessionUser);
 
   const state = getMmoState();
   res.json({
     ok: true,
     sessionUser,
+    sessionToken,
     activePlayerId: result.player.id,
     player: result.player,
-    state,
+    state: sanitizePublicState(state),
     accounts: listRegisteredAccounts(),
   });
 });
@@ -289,8 +322,9 @@ api.post('/mmo/auth/logout', (_req: Request, res: Response) => {
   res.json({
     ok: true,
     sessionUser: null,
+    sessionToken: null,
     activePlayerId: null,
-    state,
+    state: sanitizePublicState(state),
     accounts: listRegisteredAccounts(),
   });
 });
@@ -299,7 +333,7 @@ api.post('/mmo/auth/logout', (_req: Request, res: Response) => {
 api.post('/mmo/reset', (_req: Request, res: Response) => {
   res.clearCookie('arron_portfolio_session', { path: '/' });
   const state = resetMmoState();
-  res.json({ ok: true, state });
+  res.json({ ok: true, state: sanitizePublicState(state) });
 });
 
 // 2-Step AI Pre-Forge Endpoint:
@@ -588,6 +622,9 @@ api.post(
           foil: forged.foil,
           opticalTrait: forged.opticalTrait,
           level: 1,
+          xp: 0,
+          battlesFought: 0,
+          battlesWon: 0,
           ascensionTier: 0,
           hypeCount: 1,
           hp: forged.hp,
@@ -614,16 +651,27 @@ api.post(
 
         state.cards.unshift(newCard);
         forgedCards.push(newCard);
+        player.starterGranted = true;
 
         // Only equip or store in Player's Deck if NOT sent to the Wild
         if (!isWild) {
-          if (player.squadCardIds.length < 4) {
+          if (equipSlot >= 0 && equipSlot < 4) {
+            player.squadCardIds[equipSlot] = newCard.id;
+          } else if (player.squadCardIds.length < 4) {
             if (!player.squadCardIds.includes(newCard.id)) {
               player.squadCardIds.push(newCard.id);
             }
-          } else if (equipSlot >= 0 && equipSlot < 4) {
-            player.squadCardIds[equipSlot] = newCard.id;
+          } else {
+            // Auto-replace the first Starter card in active squad so newly uploaded photos join battles immediately
+            const starterSlotIdx = player.squadCardIds.findIndex((cid) => {
+              const existing = state.cards.find((c) => c.id === cid);
+              return existing?.isStarter;
+            });
+            if (starterSlotIdx !== -1) {
+              player.squadCardIds[starterSlotIdx] = newCard.id;
+            }
           }
+          advancePlayerMission(player, 'photos_uploaded', 1);
         }
 
         if (shareToFeed) {
@@ -646,7 +694,7 @@ api.post(
         player.lumenDust += isWild ? 90 : 120;
         player.chromaticShards += isWild ? 3 : 4;
         player.xp += isWild ? 65 : 85;
-        if (player.xp >= player.level * 200) {
+        while (player.xp >= player.level * 200) {
           player.level += 1;
         }
       }
@@ -667,7 +715,7 @@ api.post(
         destination,
         forgedCards,
         rejectedNsfw,
-        state,
+        state: sanitizePublicState(state),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to forge photo card';
@@ -688,6 +736,10 @@ api.post('/mmo/cards/:id/release-wild', (req: Request, res: Response) => {
     res.status(404).json({ error: 'Card not found' });
     return;
   }
+  if (card.ownerId !== player.id) {
+    res.status(403).json({ error: 'You can only release cards from your own personal Deck.' });
+    return;
+  }
 
   card.isWild = true;
   card.ownerId = 'wild-rift';
@@ -703,7 +755,7 @@ api.post('/mmo/cards/:id/release-wild', (req: Request, res: Response) => {
   player.chromaticShards += 2;
 
   saveMmoState(state);
-  res.json({ ok: true, card, state });
+  res.json({ ok: true, card, state: sanitizePublicState(state) });
 });
 
 // Judge a Photo Card with a Vibe Reaction (Cool, Cute, Scary, Funny, Chill, Epic) -> Saves Click & Directly Modifies Card Stats!
@@ -813,9 +865,10 @@ api.post('/mmo/cards/:id/judge', (req: Request, res: Response) => {
   if (!player) return;
   player.lumenDust += 10;
   player.xp += 15;
-  if (player.xp >= player.level * 200) {
+  while (player.xp >= player.level * 200) {
     player.level += 1;
   }
+  advancePlayerMission(player, 'vibes_judged', 1);
 
   saveMmoState(state);
   res.json({
@@ -823,7 +876,7 @@ api.post('/mmo/cards/:id/judge', (req: Request, res: Response) => {
     vibe,
     statDeltaLabel,
     card,
-    state,
+    state: sanitizePublicState(state),
   });
 });
 
@@ -853,7 +906,7 @@ api.post('/mmo/posts/:id/hype', (req: Request, res: Response) => {
   player.lumenDust += 15;
 
   saveMmoState(state);
-  res.json({ ok: true, state });
+  res.json({ ok: true, state: sanitizePublicState(state) });
 });
 
 // Comment on a Social Feed Post
@@ -884,22 +937,43 @@ api.post('/mmo/posts/:id/comment', (req: Request, res: Response) => {
   });
 
   saveMmoState(state);
-  res.json({ ok: true, state });
+  res.json({ ok: true, state: sanitizePublicState(state) });
 });
 
-// Update Player Squad Formation or Faction Allegiance
+// Update Player Squad Formation, Auto-Build Best Deck, or Profile/Faction
 api.put('/mmo/player/squad', (req: Request, res: Response) => {
-  const { squadCardIds, faction, displayName } = (req.body || {}) as {
+  const { squadCardIds, autoBuild, faction, displayName, username } = (req.body || {}) as {
     squadCardIds?: string[];
+    autoBuild?: boolean;
     faction?: FactionId;
     displayName?: string;
+    username?: string;
   };
 
   const state = getMmoState();
   const player = requireAuthPlayer(req, res, state);
   if (!player) return;
 
-  if (Array.isArray(squadCardIds)) {
+  if (autoBuild) {
+    const owned = state.cards
+      .filter((c) => !c.isWild && c.ownerId === player.id)
+      .sort((a, b) => {
+        // Prefer player-uploaded photos slightly over starters of equal power, then highest power
+        const starterPenaltyA = a.isStarter ? -40 : 0;
+        const starterPenaltyB = b.isStarter ? -40 : 0;
+        return b.powerRating + starterPenaltyB - (a.powerRating + starterPenaltyA);
+      });
+    // Pick up to 4 balancing roles first (1 Defender/Brawler front + strongest remaining)
+    const front = owned.find((c) => c.role === 'Vanguard' || c.role === 'Bruiser') || owned[0];
+    const picked: MmoCard[] = front ? [front] : [];
+    for (const c of owned) {
+      if (picked.length >= 4) break;
+      if (!picked.some((p) => p.id === c.id)) {
+        picked.push(c);
+      }
+    }
+    player.squadCardIds = picked.map((c) => c.id);
+  } else if (Array.isArray(squadCardIds)) {
     // Only allow cards owned by the player (not wild cards)
     const validIds = squadCardIds.filter((cid) => {
       const c = state.cards.find((card) => card.id === cid);
@@ -907,15 +981,42 @@ api.put('/mmo/player/squad', (req: Request, res: Response) => {
     });
     player.squadCardIds = validIds.slice(0, 4);
   }
-  if (faction && ['Helios', 'Umbra', 'Prism'].includes(faction)) {
-    player.faction = faction;
-  }
-  if (displayName && displayName.trim()) {
-    player.displayName = displayName.trim();
+
+  if (faction !== undefined || displayName !== undefined || username !== undefined) {
+    const profileRes = updatePlayerProfile(state, player, { faction, displayName, username });
+    if (!profileRes.ok) {
+      res.status(400).json({ error: profileRes.error });
+      return;
+    }
   }
 
   saveMmoState(state);
-  res.json({ ok: true, state });
+  res.json({
+    ok: true,
+    state: sanitizePublicState(state),
+    accounts: listRegisteredAccounts(),
+  });
+});
+
+// Claim a Completed Player Mission -> Rewards Lumen Dust, Shards, XP & Rotates Next Tier!
+api.post('/mmo/player/missions/:id/claim', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const state = getMmoState();
+  const player = requireAuthPlayer(req, res, state);
+  if (!player) return;
+
+  const result = claimPlayerMission(player, String(id));
+  if (!result.ok) {
+    res.status(400).json({ error: result.error });
+    return;
+  }
+
+  saveMmoState(state);
+  res.json({
+    ok: true,
+    claimedMission: result.mission,
+    state: sanitizePublicState(state),
+  });
 });
 
 // Upgrade / Foil-Ascend / Fuse a Photo-Card in the Sanctum
@@ -935,6 +1036,10 @@ api.post('/mmo/cards/:id/upgrade', (req: Request, res: Response) => {
     res.status(404).json({ error: 'Card not found' });
     return;
   }
+  if (card.isWild || card.ownerId !== player.id) {
+    res.status(403).json({ error: 'You can only upgrade cards in your own personal Deck.' });
+    return;
+  }
 
   if (action === 'levelup') {
     const cost = card.level * 100;
@@ -943,11 +1048,8 @@ api.post('/mmo/cards/:id/upgrade', (req: Request, res: Response) => {
       return;
     }
     player.lumenDust -= cost;
-    card.level += 1;
-    card.hp = Math.round(card.hp * 1.1);
-    card.atk = Math.round(card.atk * 1.1);
-    card.def = Math.round(card.def * 1.08);
-    card.spd += 2;
+    levelUpCardOneStep(card);
+    advancePlayerMission(player, 'cards_leveled', 1);
   } else if (action === 'ascend') {
     const shardCost = 8;
     if (player.chromaticShards < shardCost) {
@@ -963,7 +1065,9 @@ api.post('/mmo/cards/:id/upgrade', (req: Request, res: Response) => {
     card.hp = Math.round(card.hp * 1.14);
     card.atk = Math.round(card.atk * 1.14);
     card.def = Math.round(card.def * 1.12);
-    card.crit = Math.min(65, card.crit + 4);
+    card.crit = Math.min(80, card.crit + 4);
+    recomputeCardPower(card);
+    advancePlayerMission(player, 'cards_leveled', 1);
   } else if (action === 'fuse') {
     if (!sacrificeCardId || sacrificeCardId === card.id) {
       res.status(400).json({ error: 'Select a different card to Soul-Fuse.' });
@@ -975,23 +1079,24 @@ api.post('/mmo/cards/:id/upgrade', (req: Request, res: Response) => {
       return;
     }
     const sacCard = state.cards[sacIdx];
+    if (sacCard.isWild || sacCard.ownerId !== player.id) {
+      res.status(403).json({ error: 'You can only fuse cards you own.' });
+      return;
+    }
     card.secondaryTrait = sacCard.opticalTrait;
     card.hp += Math.round(sacCard.hp * 0.18);
     card.atk += Math.round(sacCard.atk * 0.18);
     card.def += Math.round(sacCard.def * 0.18);
     card.spd += Math.round(sacCard.spd * 0.08);
-    card.level += 1;
+    levelUpCardOneStep(card);
+    advancePlayerMission(player, 'cards_leveled', 1);
 
     state.cards.splice(sacIdx, 1);
     player.squadCardIds = player.squadCardIds.filter((cid) => cid !== sacrificeCardId);
   }
 
-  card.powerRating = Math.round(
-    card.hp * 0.25 + card.atk * 2.4 + card.def * 1.8 + card.spd * 1.6 + card.crit * 3.5
-  );
-
   saveMmoState(state);
-  res.json({ ok: true, card, state });
+  res.json({ ok: true, card, state: sanitizePublicState(state) });
 });
 
 // Delete a Card from the Player's Personal Deck
@@ -1018,15 +1123,17 @@ api.delete('/mmo/cards/:id', (req: Request, res: Response) => {
   state.posts = state.posts.filter((p) => p.cardId !== id);
 
   saveMmoState(state);
-  res.json({ ok: true, state });
+  res.json({ ok: true, state: sanitizePublicState(state) });
 });
 
 // Record Auto-Battle Outcome against Wild Photo Cards OR Another Player's Personal Deck
+// Awards Card XP + Automatic Photo Card Level-Ups + Win Streak Multipliers!
 api.post('/mmo/battle/record', (req: Request, res: Response) => {
-  const { won, wildCardIds, opponentPlayerId } = (req.body || {}) as {
+  const { won, wildCardIds, opponentPlayerId, squadCardIds } = (req.body || {}) as {
     won: boolean;
     wildCardIds?: string[];
     opponentPlayerId?: string;
+    squadCardIds?: string[];
   };
 
   const state = getMmoState();
@@ -1058,25 +1165,69 @@ api.post('/mmo/battle/record', (req: Request, res: Response) => {
     }
   }
 
+  let dustEarned = 50;
+  let shardsEarned = 0;
+  let xpEarned = 45;
+  let cardXpEarned = 25;
+
   if (won) {
     player.wins += 1;
+    player.winStreak = (player.winStreak || 0) + 1;
+    player.bestWinStreak = Math.max(player.bestWinStreak || 0, player.winStreak);
+    const streakMult = 1 + Math.min(0.75, Math.max(0, player.winStreak - 1) * 0.15);
+
+    dustEarned = Math.round(150 * streakMult);
+    shardsEarned = player.winStreak >= 3 ? 6 : 4;
+    xpEarned = Math.round(120 * streakMult);
+    cardXpEarned = Math.round(65 * streakMult);
+
     player.eloRating += 24;
-    player.lumenDust += 150;
-    player.chromaticShards += 4;
-    player.xp += 120;
+    player.lumenDust += dustEarned;
+    player.chromaticShards += shardsEarned;
+    player.xp += xpEarned;
+    advancePlayerMission(player, 'battles_won', 1);
   } else {
     player.losses += 1;
+    player.winStreak = 0;
     player.eloRating = Math.max(800, player.eloRating - 12);
-    player.lumenDust += 50;
-    player.xp += 45;
+    player.lumenDust += dustEarned;
+    player.xp += xpEarned;
   }
 
-  if (player.xp >= player.level * 200) {
+  while (player.xp >= player.level * 200) {
     player.level += 1;
   }
 
+  // Award Card XP to every photo card that battled in the player's squad!
+  const activeSquadIds =
+    Array.isArray(squadCardIds) && squadCardIds.length > 0 ? squadCardIds : player.squadCardIds;
+  const leveledUpCards: Array<{ id: string; title: string; oldLevel: number; newLevel: number }> = [];
+
+  for (const cid of activeSquadIds) {
+    const card = state.cards.find((c) => c.id === cid && !c.isWild && c.ownerId === player.id);
+    if (!card) continue;
+    const lvlRes = awardCardBattleXp(card, cardXpEarned, won);
+    if (lvlRes.leveledUp) {
+      leveledUpCards.push({
+        id: card.id,
+        title: card.title,
+        oldLevel: lvlRes.oldLevel,
+        newLevel: lvlRes.newLevel,
+      });
+    }
+  }
+
   saveMmoState(state);
-  res.json({ ok: true, state });
+  res.json({
+    ok: true,
+    state: sanitizePublicState(state),
+    leveledUpCards,
+    winStreak: player.winStreak || 0,
+    dustEarned,
+    shardsEarned,
+    xpEarned,
+    cardXpEarned,
+  });
 });
 
 app.use('/api', api);

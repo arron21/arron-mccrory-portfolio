@@ -122,7 +122,16 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
     >
       {/* Clean Photography Showcase */}
       <div className="card-art-wrap" style={compact ? { aspectRatio: '16 / 10' } : undefined}>
-        <img src={card.imageUrl} alt={card.title} loading="lazy" />
+        <img
+          src={card.imageUrl}
+          alt={card.title}
+          loading="lazy"
+          onError={(e) => {
+            if (card.blurDataUrl && e.currentTarget.src !== card.blurDataUrl) {
+              e.currentTarget.src = card.blurDataUrl;
+            }
+          }}
+        />
         {card.foil !== 'Standard' && <div className="card-foil-glare" />}
 
         {(slotBadge || card.isWild) && (
@@ -139,13 +148,16 @@ export const CombatCardView: React.FC<CombatCardViewProps> = ({
       </div>
 
       <div className="card-body">
-        {/* Title & Power */}
+        {/* Title & Level / Power */}
         <div className="card-header-row">
           <h3 className="card-title" title={card.title}>
             {card.title}
           </h3>
-          <span className="card-power-badge" title={`Level ${card.level} · Power ${card.powerRating}`}>
-            ⚔ {card.powerRating}
+          <span
+            className="card-power-badge"
+            title={`Level ${card.level} · Power ${card.powerRating}`}
+          >
+            Lv.{card.level} · ⚔ {card.powerRating}
           </span>
         </div>
 

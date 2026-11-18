@@ -17,6 +17,20 @@ export type VibeType = 'cool' | 'cute' | 'scary' | 'funny' | 'chill' | 'epic';
 
 export type VibeCounts = Record<VibeType, number>;
 
+export interface DailyMission {
+  id: string;
+  title: string;
+  description: string;
+  metric: 'battles_won' | 'photos_uploaded' | 'cards_leveled' | 'vibes_judged';
+  target: number;
+  progress: number;
+  rewardDust: number;
+  rewardShards: number;
+  rewardXp: number;
+  claimed: boolean;
+  tier?: number;
+}
+
 export interface MmoCard {
   id: string;
   ownerId: string;
@@ -24,6 +38,7 @@ export interface MmoCard {
   ownerHandle: string;
   ownerFaction: FactionId;
   isWild?: boolean;
+  isStarter?: boolean;
   wildEncounters?: number;
   wildWins?: number;
   title: string;
@@ -46,6 +61,9 @@ export interface MmoCard {
   opticalTrait: string;
   secondaryTrait?: string;
   level: number;
+  xp?: number;
+  battlesFought?: number;
+  battlesWon?: number;
   ascensionTier: number;
   hypeCount: number;
   hp: number;
@@ -113,6 +131,10 @@ export interface MmoPlayer {
   eloRating: number;
   wins: number;
   losses: number;
+  winStreak?: number;
+  bestWinStreak?: number;
+  starterGranted?: boolean;
+  dailyMissions?: DailyMission[];
   squadCardIds: string[];
   isNpc: boolean;
 }
@@ -608,10 +630,10 @@ export function verifyPhoneCodeAndAuthenticate(params: {
       ? params.factionRaw
       : 'Helios';
 
-  const id = `player-${crypto.randomUUID().slice(0, 10)}`;
+  const id = `player-${crypto.createHash('sha256').update(phone).digest('hex').slice(0, 12)}`;
 
   db.prepare(
-    `INSERT INTO mmo_users (id, username, display_name, phone_number, password_hash, salt, faction)
+    `INSERT OR IGNORE INTO mmo_users (id, username, display_name, phone_number, password_hash, salt, faction)
      VALUES (?, ?, ?, ?, '', '', ?)`
   ).run(id, candidateUsername, displayName, phone, faction);
 
@@ -754,6 +776,574 @@ export function loginMmoAccount(
   return { ok: true, account, player };
 }
 
+interface StarterPlateTemplate {
+  key: string;
+  title: string;
+  epithet: string;
+  caption: string;
+  imageUrl: string;
+  dominantColor: string;
+  element: ElementType;
+  category: PhotoCategory;
+  role: CardRole;
+  rarity: RarityTier;
+  opticalTrait: string;
+  hp: number;
+  atk: number;
+  def: number;
+  spd: number;
+  crit: number;
+  ability: CardAbility;
+}
+
+const STARTER_PLATES: Record<string, StarterPlateTemplate> = {
+  verdant: {
+    key: 'verdant',
+    title: 'Moss Conservatory',
+    epithet: 'Starter Plate · Earth Defender',
+    caption: 'Overgrown iron glasshouse bathed in emerald morning mist.',
+    imageUrl: '/starters/verdant_conservatory.webp',
+    dominantColor: '#2d6a4f',
+    element: 'Verdant',
+    category: 'Nature',
+    role: 'Vanguard',
+    rarity: 'Rare',
+    opticalTrait: 'Emerald Canopy',
+    hp: 1120,
+    atk: 165,
+    def: 155,
+    spd: 108,
+    crit: 10,
+    ability: {
+      name: 'Living Canopy',
+      trigger: 'ON_ATTACK_2',
+      triggerLabel: 'Every 2nd Turn',
+      description: 'Restores 24% Max HP to the most injured squad ally.',
+      powerScale: 1.4,
+      effectType: 'team_heal_thorns',
+    },
+  },
+  crimson: {
+    key: 'crimson',
+    title: 'Ember Cathedral',
+    epithet: 'Starter Plate · Fire Attacker',
+    caption: 'Gothic spire silhouetted against a blood-crimson storm moon.',
+    imageUrl: '/starters/crimson_spire.webp',
+    dominantColor: '#9b2226',
+    element: 'Crimson',
+    category: 'Architecture',
+    role: 'Striker',
+    rarity: 'Rare',
+    opticalTrait: 'Storm Ember',
+    hp: 840,
+    atk: 235,
+    def: 105,
+    spd: 132,
+    crit: 18,
+    ability: {
+      name: 'Crimson Execution',
+      trigger: 'ON_CRIT',
+      triggerLabel: 'On Crit / 2nd Turn',
+      description: 'Drains 45% of damage dealt back as Crimson vitality.',
+      powerScale: 1.45,
+      effectType: 'lifesteal_exec',
+    },
+  },
+  abyssal: {
+    key: 'abyssal',
+    title: 'Tidal Sea Arches',
+    epithet: 'Starter Plate · Water Caster',
+    caption: 'Bioluminescent sea stacks glowing beneath night fog.',
+    imageUrl: '/starters/abyssal_arches.webp',
+    dominantColor: '#1d4ed8',
+    element: 'Abyssal',
+    category: 'Night & Astro',
+    role: 'Arcanist',
+    rarity: 'Rare',
+    opticalTrait: 'Tidal Glow',
+    hp: 910,
+    atk: 215,
+    def: 122,
+    spd: 124,
+    crit: 14,
+    ability: {
+      name: 'Abyssal Undertow',
+      trigger: 'ON_ATTACK_2',
+      triggerLabel: 'Every 2nd Turn',
+      description: 'Shreds target armor by 25% and restores 18% Max HP.',
+      powerScale: 1.42,
+      effectType: 'armor_shred_heal',
+    },
+  },
+  solar: {
+    key: 'solar',
+    title: 'Eclipse Monolith',
+    epithet: 'Starter Plate · Light Brawler',
+    caption: 'Ancient basalt sundial aligned beneath a total solar corona.',
+    imageUrl: '/starters/solar_obelisk.webp',
+    dominantColor: '#d97706',
+    element: 'Solar',
+    category: 'Still Life',
+    role: 'Bruiser',
+    rarity: 'Rare',
+    opticalTrait: 'Corona Flare',
+    hp: 1020,
+    atk: 195,
+    def: 138,
+    spd: 116,
+    crit: 14,
+    ability: {
+      name: 'Solar Flare',
+      trigger: 'ON_ATTACK_2',
+      triggerLabel: 'Every 2nd Turn',
+      description: 'Splashes Solar damage and shields all living allies.',
+      powerScale: 1.4,
+      effectType: 'aoe_burn',
+    },
+  },
+  astral: {
+    key: 'astral',
+    title: 'Aurora Observatory',
+    epithet: 'Starter Plate · Cosmic Caster',
+    caption: 'Alpine dome beneath ribbons of Milky Way stardust and aurora.',
+    imageUrl: '/starters/astral_observatory.webp',
+    dominantColor: '#6d28d9',
+    element: 'Astral',
+    category: 'Night & Astro',
+    role: 'Arcanist',
+    rarity: 'Epic',
+    opticalTrait: 'Starlight Prism',
+    hp: 880,
+    atk: 225,
+    def: 112,
+    spd: 138,
+    crit: 20,
+    ability: {
+      name: 'Celestial Alignment',
+      trigger: 'ON_ATTACK_2',
+      triggerLabel: 'Every 2nd Turn',
+      description: 'Boosts squad Crit Chance by +8% while striking backline.',
+      powerScale: 1.44,
+      effectType: 'chain_crit',
+    },
+  },
+  monochrome: {
+    key: 'monochrome',
+    title: 'Brutalist Light Tower',
+    epithet: 'Starter Plate · Shadow Defender',
+    caption: 'Monochrome concrete spire reflecting crepuscular god rays.',
+    imageUrl: '/starters/monochrome_tower.webp',
+    dominantColor: '#64748b',
+    element: 'Monochrome',
+    category: 'Architecture',
+    role: 'Vanguard',
+    rarity: 'Rare',
+    opticalTrait: 'Silver Crepuscular',
+    hp: 1080,
+    atk: 175,
+    def: 162,
+    spd: 120,
+    crit: 12,
+    ability: {
+      name: 'True Silhouette',
+      trigger: 'ON_ATTACK_2',
+      triggerLabel: 'Every 2nd Turn',
+      description: 'Bypasses target DEF with True Damage and steals 8 SPD.',
+      powerScale: 1.4,
+      effectType: 'true_counter',
+    },
+  },
+};
+
+export function recomputeCardPower(card: MmoCard): number {
+  const power = Math.round(
+    card.hp * 0.25 + card.atk * 2.4 + card.def * 1.8 + card.spd * 1.6 + card.crit * 3.5
+  );
+  card.powerRating = power;
+  return power;
+}
+
+export function createStarterCardFromTemplate(
+  template: StarterPlateTemplate,
+  owner: { id: string; username: string; displayName: string; faction: FactionId },
+  isWild = false
+): MmoCard {
+  const card: MmoCard = {
+    id: isWild ? `wild-starter-${template.key}` : `card-starter-${owner.id.slice(-6)}-${template.key}-${crypto.randomUUID().slice(0, 4)}`,
+    ownerId: isWild ? 'wild-rift' : owner.id,
+    ownerName: isWild ? 'The Wild Rift' : owner.displayName,
+    ownerHandle: isWild ? 'wilds' : owner.username,
+    ownerFaction: owner.faction,
+    isWild,
+    isStarter: !isWild,
+    wildEncounters: 0,
+    wildWins: 0,
+    title: template.title,
+    epithet: template.epithet,
+    caption: template.caption,
+    imageUrl: template.imageUrl,
+    dominantColor: template.dominantColor,
+    element: template.element,
+    category: template.category,
+    categoryConfidence: 96,
+    categoryBonusLabel: 'Starter Plate',
+    categoryReason: template.caption,
+    vibeCounts: { cool: 0, cute: 0, scary: 0, funny: 0, chill: 0, epic: 0 },
+    role: template.role,
+    rarity: template.rarity,
+    foil: 'Standard',
+    opticalTrait: template.opticalTrait,
+    level: 1,
+    xp: 0,
+    battlesFought: 0,
+    battlesWon: 0,
+    ascensionTier: 0,
+    hypeCount: 1,
+    hp: template.hp,
+    atk: template.atk,
+    def: template.def,
+    spd: template.spd,
+    crit: template.crit,
+    powerRating: 0,
+    ability: template.ability,
+    exif: {
+      camera: 'Starter Optical Plate',
+      lens: '35mm Prime',
+      focalLength: '35mm',
+      aperture: 'f/2.8',
+      shutterSpeed: '1/250s',
+      iso: 'ISO 200',
+    },
+    colorTelemetry: {
+      r: 120,
+      g: 120,
+      b: 120,
+      luminance: 120,
+      contrast: 48,
+      saturation: 52,
+    },
+    originalSizeBytes: 52000,
+    optimizedSizeBytes: 48000,
+    savingsPercent: 8,
+    createdAt: 'Starter Deck',
+  };
+  recomputeCardPower(card);
+  return card;
+}
+
+export function createInitialMissions(): DailyMission[] {
+  return [
+    {
+      id: 'mission-battles',
+      title: 'Rift Skirmisher',
+      description: 'Win 2 battles in The Wilds or Arena',
+      metric: 'battles_won',
+      target: 2,
+      progress: 0,
+      rewardDust: 180,
+      rewardShards: 5,
+      rewardXp: 100,
+      claimed: false,
+      tier: 1,
+    },
+    {
+      id: 'mission-upload',
+      title: 'Frame Capturer',
+      description: 'Upload 1 new photo card to your Deck',
+      metric: 'photos_uploaded',
+      target: 1,
+      progress: 0,
+      rewardDust: 160,
+      rewardShards: 4,
+      rewardXp: 90,
+      claimed: false,
+      tier: 1,
+    },
+    {
+      id: 'mission-levelup',
+      title: 'Darkroom Mastery',
+      description: 'Level up or ascend any card',
+      metric: 'cards_leveled',
+      target: 1,
+      progress: 0,
+      rewardDust: 140,
+      rewardShards: 3,
+      rewardXp: 80,
+      claimed: false,
+      tier: 1,
+    },
+    {
+      id: 'mission-vibe',
+      title: 'Gallery Critic',
+      description: 'React to 3 photo cards with Vibe badges',
+      metric: 'vibes_judged',
+      target: 3,
+      progress: 0,
+      rewardDust: 120,
+      rewardShards: 3,
+      rewardXp: 70,
+      claimed: false,
+      tier: 1,
+    },
+  ];
+}
+
+export function advancePlayerMission(
+  player: MmoPlayer,
+  metric: DailyMission['metric'],
+  amount = 1
+): void {
+  if (!Array.isArray(player.dailyMissions) || player.dailyMissions.length === 0) {
+    player.dailyMissions = createInitialMissions();
+  }
+  for (const m of player.dailyMissions) {
+    if (!m.claimed && m.metric === metric) {
+      m.progress = Math.min(m.target, (m.progress || 0) + amount);
+    }
+  }
+}
+
+export function claimPlayerMission(
+  player: MmoPlayer,
+  missionId: string
+): { ok: true; mission: DailyMission } | { ok: false; error: string } {
+  if (!Array.isArray(player.dailyMissions) || player.dailyMissions.length === 0) {
+    player.dailyMissions = createInitialMissions();
+  }
+  const idx = player.dailyMissions.findIndex((m) => m.id === missionId);
+  if (idx === -1) return { ok: false, error: 'Mission not found.' };
+  const mission = player.dailyMissions[idx];
+  if (mission.claimed) return { ok: false, error: 'Mission already claimed.' };
+  if (mission.progress < mission.target) {
+    return { ok: false, error: `Complete ${mission.target - mission.progress} more to claim.` };
+  }
+
+  player.lumenDust += mission.rewardDust;
+  player.chromaticShards += mission.rewardShards;
+  player.xp += mission.rewardXp;
+  while (player.xp >= player.level * 200) {
+    player.level += 1;
+  }
+
+  // Rotate in next tier repeatable mission for replayability!
+  const nextTier = (mission.tier || 1) + 1;
+  const escalatedTarget =
+    mission.metric === 'battles_won'
+      ? mission.target + 1
+      : mission.metric === 'vibes_judged'
+      ? mission.target + 2
+      : mission.target + 1;
+  const completedCopy = { ...mission, claimed: true };
+
+  player.dailyMissions[idx] = {
+    ...mission,
+    tier: nextTier,
+    title: `${mission.title.replace(/\s+(II|III|IV|V|Tier \d+)$/, '')} Tier ${nextTier}`,
+    description:
+      mission.metric === 'battles_won'
+        ? `Win ${escalatedTarget} battles in The Wilds or Arena`
+        : mission.metric === 'photos_uploaded'
+        ? `Upload ${escalatedTarget} new photo cards`
+        : mission.metric === 'cards_leveled'
+        ? `Level up or ascend ${escalatedTarget} cards`
+        : `React to ${escalatedTarget} photo cards with Vibe badges`,
+    target: escalatedTarget,
+    progress: 0,
+    rewardDust: Math.round(mission.rewardDust * 1.25),
+    rewardShards: mission.rewardShards + 2,
+    rewardXp: Math.round(mission.rewardXp * 1.25),
+    claimed: false,
+  };
+
+  return { ok: true, mission: completedCopy };
+}
+
+export function levelUpCardOneStep(card: MmoCard): void {
+  card.level += 1;
+  card.hp = Math.round(card.hp * 1.1);
+  card.atk = Math.round(card.atk * 1.1);
+  card.def = Math.round(card.def * 1.08);
+  card.spd += 2;
+  if (card.level % 2 === 0) {
+    card.crit = Math.min(80, card.crit + 1);
+  }
+  recomputeCardPower(card);
+}
+
+export function awardCardBattleXp(
+  card: MmoCard,
+  xpGain: number,
+  won: boolean
+): { leveledUp: boolean; oldLevel: number; newLevel: number } {
+  const oldLevel = card.level || 1;
+  card.battlesFought = (card.battlesFought || 0) + 1;
+  if (won) {
+    card.battlesWon = (card.battlesWon || 0) + 1;
+  }
+  card.xp = (card.xp || 0) + xpGain;
+
+  while (card.xp >= card.level * 100) {
+    card.xp -= card.level * 100;
+    levelUpCardOneStep(card);
+  }
+
+  return {
+    leveledUp: card.level > oldLevel,
+    oldLevel,
+    newLevel: card.level,
+  };
+}
+
+export function ensureWildEncounters(state: MmoState): void {
+  const existingWilds = state.cards.filter((c) => c.isWild);
+  if (existingWilds.length > 0) return;
+
+  const wildTemplates = [
+    STARTER_PLATES.crimson,
+    STARTER_PLATES.abyssal,
+    STARTER_PLATES.astral,
+    STARTER_PLATES.monochrome,
+  ];
+  for (const tpl of wildTemplates) {
+    const wildCard = createStarterCardFromTemplate(
+      tpl,
+      { id: 'wild-rift', username: 'wilds', displayName: 'The Wild Rift', faction: 'Prism' },
+      true
+    );
+    state.cards.push(wildCard);
+  }
+}
+
+export function repairPlayerOwnershipAndSquad(state: MmoState, player: MmoPlayer): boolean {
+  let changed = false;
+
+  if (!Array.isArray(player.dailyMissions) || player.dailyMissions.length === 0) {
+    player.dailyMissions = createInitialMissions();
+    changed = true;
+  }
+  if (typeof player.winStreak !== 'number') {
+    player.winStreak = 0;
+    changed = true;
+  }
+  if (typeof player.bestWinStreak !== 'number') {
+    player.bestWinStreak = 0;
+    changed = true;
+  }
+
+  // Re-bind any non-wild cards owned by this handle to the current player.id
+  const lowerHandle = player.username.toLowerCase();
+  for (const card of state.cards) {
+    if (!card.isWild && card.ownerHandle?.toLowerCase() === lowerHandle && card.ownerId !== player.id) {
+      card.ownerId = player.id;
+      changed = true;
+    }
+  }
+
+  const ownedCards = state.cards.filter((c) => !c.isWild && c.ownerId === player.id);
+
+  // Grant 4-card Starter Deck on first login / when account has never received starters and owns 0 cards
+  if (!player.starterGranted && ownedCards.length === 0) {
+    const starterKeysByFaction: Record<FactionId, string[]> = {
+      Helios: ['solar', 'verdant', 'crimson', 'abyssal'],
+      Umbra: ['monochrome', 'abyssal', 'crimson', 'astral'],
+      Prism: ['verdant', 'astral', 'solar', 'crimson'],
+    };
+    const keys = starterKeysByFaction[player.faction] || starterKeysByFaction.Helios;
+    const starterCards = keys.map((k) =>
+      createStarterCardFromTemplate(STARTER_PLATES[k], {
+        id: player.id,
+        username: player.username,
+        displayName: player.displayName,
+        faction: player.faction,
+      })
+    );
+    state.cards.unshift(...starterCards);
+    player.squadCardIds = starterCards.map((c) => c.id);
+    player.starterGranted = true;
+    changed = true;
+  } else {
+    if (!player.starterGranted && ownedCards.length > 0) {
+      player.starterGranted = true;
+      changed = true;
+    }
+    // Prune stale squad IDs & ensure squad auto-fills from owned cards if empty
+    const ownedMap = new Map(ownedCards.map((c) => [c.id, c]));
+    const cleanSquad = (player.squadCardIds || []).filter((cid) => ownedMap.has(cid));
+    if (cleanSquad.length !== (player.squadCardIds || []).length) {
+      player.squadCardIds = cleanSquad;
+      changed = true;
+    }
+    if (player.squadCardIds.length === 0 && ownedCards.length > 0) {
+      player.squadCardIds = ownedCards.slice(0, 4).map((c) => c.id);
+      changed = true;
+    }
+  }
+
+  ensureWildEncounters(state);
+  return changed;
+}
+
+export function updatePlayerProfile(
+  state: MmoState,
+  player: MmoPlayer,
+  updates: { displayName?: string; username?: string; faction?: FactionId }
+): { ok: true } | { ok: false; error: string } {
+  if (updates.username !== undefined) {
+    const clean = updates.username
+      .trim()
+      .toLowerCase()
+      .replace(/^@/, '')
+      .replace(/[^a-z0-9_-]/g, '');
+    if (clean.length < 2 || clean.length > 24) {
+      return { ok: false, error: 'Handle must be 2–24 characters (letters, numbers, _ or -).' };
+    }
+    if (clean !== player.username.toLowerCase()) {
+      const conflict = db
+        .prepare('SELECT id FROM mmo_users WHERE username = ? AND id != ?')
+        .get(clean, player.id) as { id: string } | undefined;
+      const stateConflict = state.players.find(
+        (p) => p.id !== player.id && p.username.toLowerCase() === clean
+      );
+      if (conflict || stateConflict) {
+        return { ok: false, error: `Handle @${clean} is already taken.` };
+      }
+      db.prepare('UPDATE mmo_users SET username = ? WHERE id = ?').run(clean, player.id);
+      player.username = clean;
+      for (const c of state.cards) {
+        if (c.ownerId === player.id) c.ownerHandle = clean;
+      }
+      for (const p of state.posts) {
+        if (p.authorId === player.id) p.authorHandle = clean;
+      }
+    }
+  }
+
+  if (updates.displayName !== undefined && updates.displayName.trim()) {
+    const cleanName = updates.displayName.trim().slice(0, 32);
+    db.prepare('UPDATE mmo_users SET display_name = ? WHERE id = ?').run(cleanName, player.id);
+    player.displayName = cleanName;
+    for (const c of state.cards) {
+      if (c.ownerId === player.id && !c.isWild) c.ownerName = cleanName;
+    }
+    for (const p of state.posts) {
+      if (p.authorId === player.id) p.authorName = cleanName;
+    }
+  }
+
+  if (updates.faction && ['Helios', 'Umbra', 'Prism'].includes(updates.faction)) {
+    db.prepare('UPDATE mmo_users SET faction = ? WHERE id = ?').run(updates.faction, player.id);
+    player.faction = updates.faction;
+    for (const c of state.cards) {
+      if (c.ownerId === player.id) c.ownerFaction = updates.faction;
+    }
+    for (const p of state.posts) {
+      if (p.authorId === player.id) p.authorFaction = updates.faction;
+    }
+  }
+
+  return { ok: true };
+}
+
 export function ensurePlayerInState(
   state: MmoState,
   account: { id: string; username: string; displayName: string; faction?: FactionId }
@@ -772,26 +1362,34 @@ export function ensurePlayerInState(
       title: 'Lumenmancer Initiate',
       level: 1,
       xp: 0,
-      lumenDust: 250,
-      chromaticShards: 8,
+      lumenDust: 300,
+      chromaticShards: 10,
       eloRating: 1000,
       wins: 0,
       losses: 0,
+      winStreak: 0,
+      bestWinStreak: 0,
+      starterGranted: false,
+      dailyMissions: createInitialMissions(),
       squadCardIds: [],
       isNpc: false,
     };
     state.players.push(player);
   }
+
+  repairPlayerOwnershipAndSquad(state, player);
   return player;
 }
 
 function buildInitialMmoState(): MmoState {
-  return {
+  const initial: MmoState = {
     players: [],
     cards: [],
     posts: [],
     authCredentials: listAllUserCredentials(),
   };
+  ensureWildEncounters(initial);
+  return initial;
 }
 
 export function getMmoState(): MmoState {
@@ -805,12 +1403,14 @@ export function getMmoState(): MmoState {
   }
   try {
     const parsed = JSON.parse(row.value) as MmoState;
-    return {
+    const state: MmoState = {
       players: Array.isArray(parsed.players) ? parsed.players : [],
       cards: parsed.cards || [],
       posts: parsed.posts || [],
       authCredentials: listAllUserCredentials(),
     };
+    ensureWildEncounters(state);
+    return state;
   } catch {
     const initial = buildInitialMmoState();
     saveMmoState(initial);
@@ -856,44 +1456,7 @@ export function mergeClientStateIntoServer(clientState: Partial<MmoState>): MmoS
     }
   }
 
-  // 1. Merge players
-  if (Array.isArray(clientState.players)) {
-    for (const cp of clientState.players) {
-      if (!cp || !cp.id || !cp.username) continue;
-
-      const existing = state.players.find(
-        (sp) => sp.id === cp.id || sp.username.toLowerCase() === cp.username.toLowerCase()
-      );
-      if (!existing) {
-        state.players.push(cp);
-        changed = true;
-      } else {
-        // Restore squadCardIds or higher progression if server cold-started
-        if (
-          existing.squadCardIds.length === 0 &&
-          Array.isArray(cp.squadCardIds) &&
-          cp.squadCardIds.length > 0
-        ) {
-          existing.squadCardIds = cp.squadCardIds;
-          changed = true;
-        }
-        if ((cp.xp || 0) > (existing.xp || 0) || (cp.level || 1) > (existing.level || 1)) {
-          existing.level = Math.max(existing.level, cp.level || 1);
-          existing.xp = Math.max(existing.xp, cp.xp || 0);
-          existing.lumenDust = Math.max(existing.lumenDust, cp.lumenDust || 0);
-          existing.chromaticShards = Math.max(
-            existing.chromaticShards,
-            cp.chromaticShards || 0
-          );
-          existing.wins = Math.max(existing.wins, cp.wins || 0);
-          existing.losses = Math.max(existing.losses, cp.losses || 0);
-          changed = true;
-        }
-      }
-    }
-  }
-
-  // 2. Merge uploaded cards
+  // 1. Merge uploaded/owned cards FIRST so player squad references resolve cleanly
   if (Array.isArray(clientState.cards)) {
     const serverCardMap = new Map(state.cards.map((c) => [c.id, c]));
     for (const cc of clientState.cards) {
@@ -903,9 +1466,65 @@ export function mergeClientStateIntoServer(clientState: Partial<MmoState>): MmoS
         state.cards.push(cc);
         serverCardMap.set(cc.id, cc);
         changed = true;
-      } else if ((cc.powerRating || 0) > (existingCard.powerRating || 0)) {
-        Object.assign(existingCard, cc);
+      } else {
+        const clientHigherLevel =
+          (cc.level || 1) > (existingCard.level || 1) ||
+          ((cc.level || 1) === (existingCard.level || 1) && (cc.xp || 0) > (existingCard.xp || 0)) ||
+          (cc.powerRating || 0) > (existingCard.powerRating || 0) ||
+          (cc.hypeCount || 0) > (existingCard.hypeCount || 0);
+        if (clientHigherLevel) {
+          Object.assign(existingCard, cc);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  // 2. Merge players
+  if (Array.isArray(clientState.players)) {
+    for (const cp of clientState.players) {
+      if (!cp || !cp.id || !cp.username) continue;
+
+      const existing = state.players.find(
+        (sp) => sp.id === cp.id || sp.username.toLowerCase() === cp.username.toLowerCase()
+      );
+      if (!existing) {
+        state.players.push(cp);
+        repairPlayerOwnershipAndSquad(state, cp);
         changed = true;
+      } else {
+        // Prefer client non-empty squad if server has fewer/only starters or is empty
+        if (Array.isArray(cp.squadCardIds) && cp.squadCardIds.length > existing.squadCardIds.length) {
+          existing.squadCardIds = cp.squadCardIds;
+          changed = true;
+        }
+        if (cp.starterGranted && !existing.starterGranted) {
+          existing.starterGranted = true;
+          changed = true;
+        }
+        if (
+          (cp.xp || 0) > (existing.xp || 0) ||
+          (cp.level || 1) > (existing.level || 1) ||
+          (cp.wins || 0) > (existing.wins || 0)
+        ) {
+          existing.level = Math.max(existing.level, cp.level || 1);
+          existing.xp = Math.max(existing.xp, cp.xp || 0);
+          existing.lumenDust = Math.max(existing.lumenDust, cp.lumenDust || 0);
+          existing.chromaticShards = Math.max(
+            existing.chromaticShards,
+            cp.chromaticShards || 0
+          );
+          existing.wins = Math.max(existing.wins, cp.wins || 0);
+          existing.losses = Math.max(existing.losses, cp.losses || 0);
+          existing.bestWinStreak = Math.max(
+            existing.bestWinStreak || 0,
+            cp.bestWinStreak || 0
+          );
+          changed = true;
+        }
+        if (repairPlayerOwnershipAndSquad(state, existing)) {
+          changed = true;
+        }
       }
     }
   }

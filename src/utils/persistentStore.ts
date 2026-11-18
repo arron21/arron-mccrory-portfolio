@@ -6,6 +6,7 @@ const STORE_NAME = 'mmo_state_store';
 const STATE_RECORD_KEY = 'chromarift_mmo_state_v3_clean';
 const LOCAL_STORAGE_FALLBACK_KEY = 'chromarift_mmo_state_cache_v3_clean';
 const ACTIVE_PLAYER_KEY = 'chromarift_active_player_id_v2';
+const SESSION_TOKEN_KEY = 'chromarift_session_token_v1';
 
 function openIdb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -49,13 +50,33 @@ async function purgeLegacyClientKeys(): Promise<void> {
 }
 
 export async function savePersistentMmoState(state: MmoState): Promise<void> {
-  // 1. Save to IndexedDB (500MB+ capacity, never hits 5MB localStorage quota on multi-photo uploads)
   try {
     const db = await openIdb();
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
       store.put(state, STATE_RECORD_KEY);
+      if (state.activePlayerId) {
+        const pid = state.activePlayerId;
+        const player = state.players.find((p) => p.id === pid);
+        if (player) {
+          const accountCards = state.cards.filter(
+            (c) =>
+              !c.isWild &&
+              (c.ownerId === pid ||
+                c.ownerHandle?.toLowerCase() === player.username.toLowerCase())
+          );
+          const accountPosts = state.posts.filter((p) => p.authorId === pid);
+          store.put(
+            {
+              players: [player],
+              cards: accountCards,
+              posts: accountPosts,
+            },
+            `account_backup_${pid}`
+          );
+        }
+      }
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
@@ -63,7 +84,6 @@ export async function savePersistentMmoState(state: MmoState): Promise<void> {
     // Fallback to localStorage if IndexedDB fails
   }
 
-  // 2. Also save to localStorage when within quota
   try {
     localStorage.setItem(LOCAL_STORAGE_FALLBACK_KEY, JSON.stringify(state));
   } catch {
@@ -71,10 +91,25 @@ export async function savePersistentMmoState(state: MmoState): Promise<void> {
   }
 }
 
+export async function loadAccountBackup(playerId: string): Promise<Partial<MmoState> | null> {
+  if (!playerId) return null;
+  try {
+    const db = await openIdb();
+    return await new Promise<Partial<MmoState> | null>((resolve) => {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.get(`account_backup_${playerId}`);
+      req.onsuccess = () => resolve((req.result as Partial<MmoState>) || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
 export async function loadPersistentMmoState(): Promise<MmoState | null> {
   await purgeLegacyClientKeys();
 
-  // 1. Try IndexedDB first
   try {
     const db = await openIdb();
     const idbState = await new Promise<MmoState | null>((resolve, reject) => {
@@ -91,7 +126,6 @@ export async function loadPersistentMmoState(): Promise<MmoState | null> {
     // Fall through to localStorage
   }
 
-  // 2. Fallback to localStorage
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_FALLBACK_KEY);
     if (raw) {
@@ -118,6 +152,26 @@ export function setSavedActivePlayerId(playerId: string | null): void {
       localStorage.setItem(ACTIVE_PLAYER_KEY, playerId);
     } else {
       localStorage.removeItem(ACTIVE_PLAYER_KEY);
+    }
+  } catch {
+    // Ignore storage error
+  }
+}
+
+export function getSavedSessionToken(): string | null {
+  try {
+    return localStorage.getItem(SESSION_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setSavedSessionToken(token: string | null): void {
+  try {
+    if (token) {
+      localStorage.setItem(SESSION_TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(SESSION_TOKEN_KEY);
     }
   } catch {
     // Ignore storage error

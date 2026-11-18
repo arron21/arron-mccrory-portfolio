@@ -50,11 +50,24 @@ export function createSession(res: Response, user: SessionUser): string {
   return token;
 }
 
+export function extractSessionToken(req: Request): string | null {
+  const authHeader = req.headers?.authorization;
+  if (typeof authHeader === 'string' && authHeader.toLowerCase().startsWith('bearer ')) {
+    const bearer = authHeader.slice(7).trim();
+    if (bearer) return bearer;
+  }
+  const cookieToken = req.cookies?.[COOKIE_NAME];
+  if (typeof cookieToken === 'string' && cookieToken) {
+    return cookieToken;
+  }
+  return null;
+}
+
 export function getSessionUser(req: Request): SessionUser | null {
-  const token = req.cookies?.[COOKIE_NAME];
+  const token = extractSessionToken(req);
   if (!token || typeof token !== 'string') return null;
 
-  // 1. Verify stateless HMAC token (works across all Vercel serverless instances)
+  // 1. Verify stateless HMAC token (works across all Vercel serverless instances & iframes)
   if (token.includes('.')) {
     const [payloadB64, sig] = token.split('.');
     if (payloadB64 && sig && signPayload(payloadB64) === sig) {
@@ -72,17 +85,17 @@ export function getSessionUser(req: Request): SessionUser | null {
   }
 
   // 2. Fallback to SQLite session lookup
-  const row = db
-    .prepare('SELECT user_json, expires_at FROM sessions WHERE token = ?')
-    .get(token) as { user_json: string; expires_at: number } | undefined;
-
-  if (!row) return null;
-  if (row.expires_at < Date.now()) {
-    db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
-    return null;
-  }
-
   try {
+    const row = db
+      .prepare('SELECT user_json, expires_at FROM sessions WHERE token = ?')
+      .get(token) as { user_json: string; expires_at: number } | undefined;
+
+    if (!row) return null;
+    if (row.expires_at < Date.now()) {
+      db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+      return null;
+    }
+
     return JSON.parse(row.user_json) as SessionUser;
   } catch {
     return null;

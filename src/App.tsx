@@ -26,6 +26,11 @@ import {
   Trash2,
   RefreshCw,
   Wand2,
+  Flame,
+  Award,
+  Edit3,
+  Check,
+  X,
 } from 'lucide-react';
 import {
   formatBytes,
@@ -40,6 +45,7 @@ import {
   type VibeType,
   type SessionUser,
   type MmoUserAccount,
+  type DailyMission,
 } from './types.ts';
 import { CombatCardView } from './components/CombatCardView.tsx';
 import { AutoBattleArenaModal } from './components/AutoBattleArenaModal.tsx';
@@ -59,8 +65,11 @@ import {
 import {
   savePersistentMmoState,
   loadPersistentMmoState,
+  loadAccountBackup,
   getSavedActivePlayerId,
   setSavedActivePlayerId,
+  getSavedSessionToken,
+  setSavedSessionToken,
 } from './utils/persistentStore.ts';
 
 const REQUIRED_SQUAD_SIZE = 4;
@@ -93,6 +102,12 @@ export function App() {
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [inspectedPlayerId, setInspectedPlayerId] = useState<string | null>(null);
 
+  // Inline Profile Customizer in My Deck
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [editDisplayName, setEditDisplayName] = useState('');
+  const [editUsername, setEditUsername] = useState('');
+  const [editFaction, setEditFaction] = useState<FactionId>('Helios');
+
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -119,7 +134,7 @@ export function App() {
   // Social Feed comment inputs
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
 
-  // Soul-Lens Forge Upload state (2-Step AI: Analyze + NSFW Purge -> Description -> Short Name)
+  // Soul-Lens Forge Upload state (Step 1: Analyze + NSFW Purge -> Step 2: Description -> Short Name)
   const [forgeDestination, setForgeDestination] = useState<'deck' | 'wild'>('deck');
   const [stagedFiles, setStagedFiles] = useState<File[]>([]);
   const [stagedPreviews, setStagedPreviews] = useState<string[]>([]);
@@ -155,10 +170,33 @@ export function App() {
     }, 4200);
   };
 
+  const getAuthHeaders = (
+    extra?: Record<string, string>,
+    tokenOverride?: string | null,
+    playerIdOverride?: string | null
+  ): Record<string, string> => {
+    const headers: Record<string, string> = { ...(extra || {}) };
+    const token = tokenOverride !== undefined ? tokenOverride : getSavedSessionToken();
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    const pid =
+      playerIdOverride !== undefined
+        ? playerIdOverride
+        : activePlayerId || getSavedActivePlayerId();
+    if (pid) {
+      headers['x-player-id'] = pid;
+    }
+    return headers;
+  };
+
   const syncState = (nextState: MmoState) => {
     setMmoState(nextState);
     if (nextState.sessionUser !== undefined) {
       setSessionUser(nextState.sessionUser || null);
+    }
+    if (nextState.sessionToken !== undefined) {
+      setSavedSessionToken(nextState.sessionToken || null);
     }
     if (nextState.activePlayerId !== undefined) {
       setActivePlayerId(nextState.activePlayerId || null);
@@ -170,6 +208,109 @@ export function App() {
     void savePersistentMmoState(nextState);
   };
 
+  const syncAfterLogin = async (
+    serverState: MmoState | undefined,
+    pid: string | null,
+    handle: string | undefined,
+    token: string | null
+  ) => {
+    if (!serverState || !pid) return;
+    try {
+      const [acctBackup, globalBackup] = await Promise.all([
+        loadAccountBackup(pid),
+        loadPersistentMmoState(),
+      ]);
+
+      const localCards = [
+        ...(acctBackup?.cards || []),
+        ...(globalBackup?.cards || []),
+      ].filter(
+        (c) =>
+          c.isWild ||
+          c.ownerId === pid ||
+          (handle && c.ownerHandle?.toLowerCase() === handle.toLowerCase())
+      );
+
+      const localPlayers = [
+        ...(acctBackup?.players || []),
+        ...(globalBackup?.players || []),
+      ].filter(
+        (p) =>
+          p.id === pid ||
+          (handle && p.username.toLowerCase() === handle.toLowerCase())
+      );
+
+      const localPosts = [
+        ...(acctBackup?.posts || []),
+        ...(globalBackup?.posts || []),
+      ].filter((p) => p.authorId === pid);
+
+      if (localCards.length === 0 && localPlayers.length === 0 && localPosts.length === 0) {
+        return;
+      }
+
+      const serverCardMap = new Map((serverState.cards || []).map((c) => [c.id, c]));
+      const serverPostIds = new Set((serverState.posts || []).map((p) => p.id));
+
+      const hasNewerOrMissingCard = localCards.some((lc) => {
+        const sc = serverCardMap.get(lc.id);
+        return (
+          !sc ||
+          (lc.level || 1) > (sc.level || 1) ||
+          (lc.xp || 0) > (sc.xp || 0) ||
+          (lc.hypeCount || 0) > (sc.hypeCount || 0)
+        );
+      });
+      const hasMissingPost = localPosts.some((lp) => !serverPostIds.has(lp.id));
+      const sp = (serverState.players || []).find(
+        (p) => p.id === pid || (handle && p.username.toLowerCase() === handle.toLowerCase())
+      );
+      const lp = localPlayers[0];
+      const hasNewerPlayer =
+        Boolean(lp) &&
+        (!sp ||
+          (lp.xp || 0) > (sp.xp || 0) ||
+          (lp.level || 1) > (sp.level || 1) ||
+          (lp.wins || 0) > (sp.wins || 0) ||
+          (lp.squadCardIds?.length || 0) > (sp.squadCardIds?.length || 0));
+
+      if (!hasNewerOrMissingCard && !hasMissingPost && !hasNewerPlayer) {
+        return;
+      }
+
+      // Deduplicate cards/players/posts before syncing to server
+      const dedupCards = Array.from(new Map(localCards.map((c) => [c.id, c])).values());
+      const dedupPosts = Array.from(new Map(localPosts.map((p) => [p.id, p])).values());
+      const dedupPlayers = Array.from(new Map(localPlayers.map((p) => [p.id, p])).values());
+
+      const syncRes = await fetch('/api/mmo/sync', {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }, token, pid),
+        body: JSON.stringify({
+          state: {
+            players: dedupPlayers,
+            cards: dedupCards,
+            posts: dedupPosts,
+          },
+        }),
+      });
+      if (syncRes.ok) {
+        const syncData = await syncRes.json();
+        if (syncData.state) {
+          syncState({
+            ...syncData.state,
+            sessionUser: syncData.sessionUser ?? serverState.sessionUser,
+            sessionToken: syncData.sessionToken ?? token,
+            activePlayerId: syncData.activePlayerId ?? pid,
+            accounts: syncData.accounts,
+          });
+        }
+      }
+    } catch {
+      // Non-fatal backup sync error
+    }
+  };
+
   const fetchMmoState = async () => {
     try {
       try {
@@ -179,51 +320,74 @@ export function App() {
       }
 
       const savedPid = getSavedActivePlayerId();
-      const reqHeaders: Record<string, string> = {};
-      if (savedPid) {
-        reqHeaders['x-player-id'] = savedPid;
-      }
+      const savedToken = getSavedSessionToken();
 
-      const [localPersisted, res] = await Promise.all([
+      const [localPersisted, accountBackup, res] = await Promise.all([
         loadPersistentMmoState(),
+        savedPid ? loadAccountBackup(savedPid) : Promise.resolve(null),
         fetch('/api/mmo/state', {
-          headers: reqHeaders,
+          headers: getAuthHeaders(undefined, savedToken, savedPid),
         }),
       ]);
 
       if (res.ok) {
         const serverState = (await res.json()) as MmoState;
+        const resolvedToken = serverState.sessionToken ?? savedToken;
 
-        // Check if local IndexedDB has uploaded cards, posts, or player squad data missing on the server
-        if (localPersisted) {
+        // Combine global persistent cache + per-account IndexedDB backup so cold starts never lose a player's deck
+        const mergedLocalCards = [
+          ...(accountBackup?.cards || []),
+          ...(localPersisted?.cards || []),
+        ];
+        const mergedLocalPosts = [
+          ...(accountBackup?.posts || []),
+          ...(localPersisted?.posts || []),
+        ];
+        const mergedLocalPlayers = [
+          ...(accountBackup?.players || []),
+          ...(localPersisted?.players || []),
+        ];
+
+        if (
+          mergedLocalCards.length > 0 ||
+          mergedLocalPosts.length > 0 ||
+          mergedLocalPlayers.length > 0
+        ) {
           const serverCardIds = new Set((serverState.cards || []).map((c) => c.id));
-          const hasMissingCards = (localPersisted.cards || []).some(
-            (c) => !serverCardIds.has(c.id)
-          );
+          const hasMissingCards = mergedLocalCards.some((c) => !serverCardIds.has(c.id));
           const serverPostIds = new Set((serverState.posts || []).map((p) => p.id));
-          const hasMissingPosts = (localPersisted.posts || []).some(
-            (p) => !serverPostIds.has(p.id)
-          );
-          const hasMissingSquad = (localPersisted.players || []).some((lp) => {
+          const hasMissingPosts = mergedLocalPosts.some((p) => !serverPostIds.has(p.id));
+          const hasMissingSquad = mergedLocalPlayers.some((lp) => {
             const sp = (serverState.players || []).find((p) => p.id === lp.id);
             return (
               !sp ||
               (lp.squadCardIds?.length > 0 && (sp.squadCardIds?.length || 0) === 0) ||
-              (lp.xp || 0) > (sp.xp || 0)
+              (lp.xp || 0) > (sp.xp || 0) ||
+              (lp.wins || 0) > (sp.wins || 0)
             );
           });
 
           if (hasMissingCards || hasMissingPosts || hasMissingSquad) {
-            const syncHeaders: Record<string, string> = {
-              'Content-Type': 'application/json',
-            };
-            if (savedPid) {
-              syncHeaders['x-player-id'] = savedPid;
-            }
             const syncRes = await fetch('/api/mmo/sync', {
               method: 'POST',
-              headers: syncHeaders,
-              body: JSON.stringify({ state: localPersisted }),
+              headers: getAuthHeaders(
+                { 'Content-Type': 'application/json' },
+                resolvedToken,
+                serverState.activePlayerId || savedPid
+              ),
+              body: JSON.stringify({
+                state: {
+                  players: Array.from(
+                    new Map(mergedLocalPlayers.map((p) => [p.id, p])).values()
+                  ),
+                  cards: Array.from(
+                    new Map(mergedLocalCards.map((c) => [c.id, c])).values()
+                  ),
+                  posts: Array.from(
+                    new Map(mergedLocalPosts.map((p) => [p.id, p])).values()
+                  ),
+                },
+              }),
             });
             if (syncRes.ok) {
               const syncData = await syncRes.json();
@@ -231,6 +395,7 @@ export function App() {
                 syncState({
                   ...syncData.state,
                   sessionUser: syncData.sessionUser,
+                  sessionToken: syncData.sessionToken ?? resolvedToken,
                   activePlayerId: syncData.activePlayerId,
                   accounts: syncData.accounts,
                 });
@@ -274,7 +439,12 @@ export function App() {
   // Cards owned by the player in their personal Deck/Sanctum (excludes Wild cards)
   const playerCards: MmoCard[] = useMemo(() => {
     if (!mmoState || !player) return [];
-    return mmoState.cards.filter((c) => !c.isWild && c.ownerId === player.id);
+    const handleLower = player.username.toLowerCase();
+    return mmoState.cards.filter(
+      (c) =>
+        !c.isWild &&
+        (c.ownerId === player.id || c.ownerHandle?.toLowerCase() === handleLower)
+    );
   }, [mmoState, player]);
 
   // Cards released into the Wild Rift (not in player's deck, fightable anytime)
@@ -283,7 +453,7 @@ export function App() {
     return mmoState.cards.filter((c) => Boolean(c.isWild));
   }, [mmoState]);
 
-  // Player's active 4-card squad (must be built from uploaded Deck cards)
+  // Player's active 4-card squad (must be built from Deck cards)
   const playerSquad: MmoCard[] = useMemo(() => {
     if (!mmoState || !player) return [];
     const squad = player.squadCardIds
@@ -378,24 +548,50 @@ export function App() {
     setActiveSimulation(sim);
     setBattleRewardSummary(
       sim.won
-        ? `Victory over Wild ${targetWild.title}! +150 Lumen Dust · +4 Chromatic Shards · +24 ELO`
-        : `Defeated by Wild ${targetWild.title} · +50 Lumen Dust · Upgrade your squad in the Sanctum!`
+        ? `Victory over Wild ${targetWild.title}! Recording spoils & Card XP...`
+        : `Defeated by Wild ${targetWild.title} · Awarding Battle Card XP...`
     );
 
     const res = await fetch('/api/mmo/battle/record', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-player-id': player?.id || activePlayerId || '',
-      },
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         won: sim.won,
         wildCardIds: enemyUnits.map((u) => u.id),
+        squadCardIds: playerSquad.map((c) => c.id),
       }),
     });
     if (res.ok) {
       const data = await res.json();
       if (data.state) syncState(data.state);
+      const streakStr =
+        sim.won && (data.winStreak || 0) >= 2
+          ? ` · 🔥 ${data.winStreak} Win Streak!`
+          : '';
+      const leveled: Array<{ title: string; oldLevel: number; newLevel: number }> =
+        Array.isArray(data.leveledUpCards) ? data.leveledUpCards : [];
+      const lvlStr =
+        leveled.length > 0
+          ? ` · ⬆ ${leveled
+              .map((l) => `${l.title} Lv.${l.oldLevel}→${l.newLevel}`)
+              .join(', ')}`
+          : '';
+      setBattleRewardSummary(
+        sim.won
+          ? `Victory over Wild ${targetWild.title}! +${data.dustEarned ?? 150} Dust · +${
+              data.shardsEarned ?? 4
+            } Shards · +${data.cardXpEarned ?? 65} Card XP${streakStr}${lvlStr}`
+          : `Defeated by Wild ${targetWild.title} · +${data.dustEarned ?? 50} Dust · +${
+              data.cardXpEarned ?? 25
+            } Card XP${lvlStr}`
+      );
+      if (leveled.length > 0) {
+        showToast(
+          `⬆ Photo Card Level Up! ${leveled
+            .map((l) => `${l.title} → Lv.${l.newLevel}`)
+            .join(', ')}`
+        );
+      }
     }
   };
 
@@ -440,24 +636,52 @@ export function App() {
     setActiveSimulation(sim);
     setBattleRewardSummary(
       sim.won
-        ? `PvP Victory over @${opponent.username}'s Deck! +150 Lumen Dust · +4 Chromatic Shards · +24 ELO`
-        : `Defeated by @${opponent.username}'s Deck · +50 Lumen Dust · Upgrade your cards in My Deck!`
+        ? `PvP Victory over @${opponent.username}'s Deck! Recording spoils & Card XP...`
+        : `Defeated by @${opponent.username}'s Deck · Awarding Battle Card XP...`
     );
 
     const res = await fetch('/api/mmo/battle/record', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-player-id': player.id,
-      },
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         won: sim.won,
         opponentPlayerId: opponent.id,
+        squadCardIds: playerSquad.map((c) => c.id),
       }),
     });
     if (res.ok) {
       const data = await res.json();
       if (data.state) syncState(data.state);
+      const streakStr =
+        sim.won && (data.winStreak || 0) >= 2
+          ? ` · 🔥 ${data.winStreak} Win Streak!`
+          : '';
+      const leveled: Array<{ title: string; oldLevel: number; newLevel: number }> =
+        Array.isArray(data.leveledUpCards) ? data.leveledUpCards : [];
+      const lvlStr =
+        leveled.length > 0
+          ? ` · ⬆ ${leveled
+              .map((l) => `${l.title} Lv.${l.oldLevel}→${l.newLevel}`)
+              .join(', ')}`
+          : '';
+      setBattleRewardSummary(
+        sim.won
+          ? `PvP Victory over @${opponent.username}'s Deck! +${
+              data.dustEarned ?? 150
+            } Dust · +${data.shardsEarned ?? 4} Shards · +${
+              data.cardXpEarned ?? 65
+            } Card XP${streakStr}${lvlStr}`
+          : `Defeated by @${opponent.username}'s Deck · +${data.dustEarned ?? 50} Dust · +${
+              data.cardXpEarned ?? 25
+            } Card XP${lvlStr}`
+      );
+      if (leveled.length > 0) {
+        showToast(
+          `⬆ Photo Card Level Up! ${leveled
+            .map((l) => `${l.title} → Lv.${l.newLevel}`)
+            .join(', ')}`
+        );
+      }
     }
   };
 
@@ -487,7 +711,7 @@ export function App() {
   const handleHypePost = async (postId: string) => {
     const res = await fetch(`/api/mmo/posts/${postId}/hype`, {
       method: 'POST',
-      headers: { 'x-player-id': player?.id || activePlayerId || '' },
+      headers: getAuthHeaders(),
     });
     if (res.ok) {
       const data = await res.json();
@@ -501,10 +725,7 @@ export function App() {
     try {
       const res = await fetch(`/api/mmo/cards/${cardId}/judge`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-player-id': player?.id || activePlayerId || '',
-        },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ vibe }),
       });
       if (res.ok) {
@@ -534,10 +755,7 @@ export function App() {
 
     const res = await fetch(`/api/mmo/posts/${postId}/comment`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-player-id': player?.id || activePlayerId || '',
-      },
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ text }),
     });
     if (res.ok) {
@@ -849,7 +1067,7 @@ export function App() {
 
         const res = await fetch('/api/mmo/forge', {
           method: 'POST',
-          headers: { 'x-player-id': player?.id || activePlayerId || '' },
+          headers: getAuthHeaders(),
           body: formData,
         });
         const data = await res.json();
@@ -940,10 +1158,7 @@ export function App() {
 
     const res = await fetch('/api/mmo/player/squad', {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-player-id': player.id,
-      },
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ squadCardIds: nextSquad.filter(Boolean) }),
     });
     if (res.ok) {
@@ -953,11 +1168,106 @@ export function App() {
     }
   };
 
+  // Unequip card from active Squad
+  const handleRemoveFromSlot = async (cardId: string) => {
+    if (!player) return;
+    const nextSquad = player.squadCardIds.filter((id) => id !== cardId);
+    const res = await fetch('/api/mmo/player/squad', {
+      method: 'PUT',
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ squadCardIds: nextSquad }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.state) syncState(data.state);
+      showToast('Unequipped card from active Squad.');
+    }
+  };
+
+  // Auto-Build Best Balanced 4-Card Squad
+  const handleAutoBuildSquad = async () => {
+    if (!player) return;
+    const res = await fetch('/api/mmo/player/squad', {
+      method: 'PUT',
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ autoBuild: true }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.state) syncState(data.state);
+      showToast('⚡ Auto-built your strongest balanced 4-card Squad!');
+    }
+  };
+
+  // Claim a Completed Account Bounty / Mission
+  const handleClaimMission = async (mission: DailyMission) => {
+    try {
+      const res = await fetch(`/api/mmo/player/missions/${mission.id}/claim`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error || 'Mission not ready to claim yet.');
+      } else {
+        if (data.state) syncState(data.state);
+        showToast(
+          `🎁 Claimed "${mission.title}"! +${mission.rewardDust} Dust · +${mission.rewardShards} Shards · +${mission.rewardXp} XP`
+        );
+      }
+    } catch {
+      showToast('Failed to claim mission reward.');
+    }
+  };
+
+  // Save Updated Display Name, Handle & Faction
+  const handleSaveProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!player) return;
+    try {
+      const res = await fetch('/api/mmo/player/squad', {
+        method: 'PUT',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          displayName: editDisplayName.trim(),
+          username: editUsername.trim(),
+          faction: editFaction,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error || 'Could not update profile.');
+        return;
+      }
+      if (data.accounts) setAccounts(data.accounts);
+      const updatedPlayer = (data.state?.players as MmoPlayer[] | undefined)?.find(
+        (p) => p.id === player.id
+      );
+      if (updatedPlayer && sessionUser) {
+        setSessionUser({
+          ...sessionUser,
+          name: updatedPlayer.displayName,
+          username: updatedPlayer.username,
+        });
+      }
+      if (data.state) {
+        syncState({
+          ...(data.state as MmoState),
+          accounts: data.accounts || accounts,
+        });
+      }
+      setEditingProfile(false);
+      showToast('✓ Commander profile saved!');
+    } catch {
+      showToast('Failed to update profile.');
+    }
+  };
+
   // Release an existing Deck card to the Wild Rift
   const handleReleaseCardToWild = async (card: MmoCard) => {
     const res = await fetch(`/api/mmo/cards/${card.id}/release-wild`, {
       method: 'POST',
-      headers: { 'x-player-id': player?.id || activePlayerId || '' },
+      headers: getAuthHeaders(),
     });
     if (res.ok) {
       const data = await res.json();
@@ -972,7 +1282,7 @@ export function App() {
   const handleDeleteDeckCard = async (card: MmoCard) => {
     const res = await fetch(`/api/mmo/cards/${card.id}`, {
       method: 'DELETE',
-      headers: { 'x-player-id': player?.id || activePlayerId || '' },
+      headers: getAuthHeaders(),
     });
     if (res.ok) {
       const data = await res.json();
@@ -989,10 +1299,7 @@ export function App() {
   ) => {
     const res = await fetch(`/api/mmo/cards/${cardId}/upgrade`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-player-id': player?.id || activePlayerId || '',
-      },
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ action, sacrificeCardId }),
     });
     const data = await res.json();
@@ -1015,10 +1322,7 @@ export function App() {
   const handleSwitchFaction = async (faction: FactionId) => {
     const res = await fetch('/api/mmo/player/squad', {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-player-id': player?.id || activePlayerId || '',
-      },
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ faction }),
     });
     if (res.ok) {
@@ -1030,15 +1334,20 @@ export function App() {
 
   const handleLogoutNow = async () => {
     try {
-      const res = await fetch('/api/mmo/auth/logout', { method: 'POST' });
+      const res = await fetch('/api/mmo/auth/logout', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
       const data = await res.json();
       setSessionUser(null);
+      setSavedSessionToken(null);
       setActivePlayerId(null);
       setSavedActivePlayerId(null);
       if (data.state) {
         syncState({
           ...(data.state as MmoState),
           sessionUser: null,
+          sessionToken: null,
           activePlayerId: null,
           accounts: data.accounts || accounts,
         });
@@ -1046,6 +1355,7 @@ export function App() {
       showToast('Logged out! Log in or create a new user account to access a personal Deck.');
     } catch {
       setSessionUser(null);
+      setSavedSessionToken(null);
       setActivePlayerId(null);
       setSavedActivePlayerId(null);
     }
@@ -1143,24 +1453,36 @@ export function App() {
             cards={mmoState.cards}
             onLoginSuccess={({
               sessionUser: nextUser,
+              sessionToken: nextToken,
               activePlayerId: nextPid,
               state: nextState,
               accounts: nextAccounts,
               message,
             }) => {
               setSessionUser(nextUser);
+              if (nextToken !== undefined) {
+                setSavedSessionToken(nextToken || null);
+              }
               setActivePlayerId(nextPid || null);
               setSavedActivePlayerId(nextPid || null);
               if (Array.isArray(nextAccounts)) {
                 setAccounts(nextAccounts);
               }
               if (nextState) {
+                const typedNext = nextState as MmoState;
                 syncState({
-                  ...(nextState as MmoState),
+                  ...typedNext,
                   sessionUser: nextUser,
+                  sessionToken: nextToken ?? null,
                   activePlayerId: nextPid || null,
                   accounts: nextAccounts || accounts,
                 });
+                void syncAfterLogin(
+                  typedNext,
+                  nextPid || null,
+                  nextUser?.username,
+                  nextToken ?? null
+                );
               }
               showToast(message);
             }}
@@ -1383,7 +1705,15 @@ export function App() {
                   >
                     <div className="story-avatar-ring raid">
                       <div className="story-avatar-inner">
-                        <img src={wCard.imageUrl} alt={wCard.title} />
+                        <img
+                          src={wCard.imageUrl}
+                          alt={wCard.title}
+                          onError={(e) => {
+                            if (wCard.blurDataUrl && e.currentTarget.src !== wCard.blurDataUrl) {
+                              e.currentTarget.src = wCard.blurDataUrl;
+                            }
+                          }}
+                        />
                       </div>
                       <span className="story-tag-pill">⚔{wCard.powerRating}</span>
                     </div>
@@ -1392,7 +1722,7 @@ export function App() {
                 ))}
               </div>
 
-              {/* 2. Squad Readiness & Active Formation Bar */}
+              {/* 2. Squad Readiness, Win Streak & Active Formation Bar */}
               <section className="mobile-squad-bar" aria-label="Your Active Auto-Battle Squad">
                 <div
                   style={{
@@ -1410,11 +1740,30 @@ export function App() {
                         color: isSquadReady ? '#4ade80' : 'var(--gold-bright)',
                         textTransform: 'uppercase',
                         letterSpacing: '0.06em',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.4rem',
+                        flexWrap: 'wrap',
                       }}
                     >
-                      {isSquadReady
-                        ? `✓ 4/4 Squad Ready · ${playerSynergies.length} Synergies`
-                        : `⚠ Squad Incomplete (${playerSquad.length}/4) · Upload ${missingSquadCount} More to Deck`}
+                      <span>
+                        {isSquadReady
+                          ? `✓ 4/4 Squad Ready · ${playerSynergies.length} Synergies`
+                          : `⚠ Squad Incomplete (${playerSquad.length}/4) · Upload ${missingSquadCount} More to Deck`}
+                      </span>
+                      {(player.winStreak || 0) > 0 && (
+                        <span
+                          style={{
+                            color: '#fb923c',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.18rem',
+                            fontWeight: 700,
+                          }}
+                        >
+                          <Flame size={11} /> {player.winStreak} Streak
+                        </span>
+                      )}
                     </div>
                     <div
                       style={{
@@ -1450,11 +1799,19 @@ export function App() {
                           key={c.id}
                           className="mini-slot"
                           onClick={() => setActiveTab('sanctum')}
-                          title={`Slot ${slotIdx + 1}: ${c.title}`}
+                          title={`Slot ${slotIdx + 1}: ${c.title} (Lv.${c.level})`}
                         >
-                          <img src={c.imageUrl} alt={c.title} />
+                          <img
+                            src={c.imageUrl}
+                            alt={c.title}
+                            onError={(e) => {
+                              if (c.blurDataUrl && e.currentTarget.src !== c.blurDataUrl) {
+                                e.currentTarget.src = c.blurDataUrl;
+                              }
+                            }}
+                          />
                           <div className="mini-slot-label">
-                            S{slotIdx + 1} · {c.element}
+                            S{slotIdx + 1} · Lv.{c.level}
                           </div>
                         </div>
                       );
@@ -1491,6 +1848,44 @@ export function App() {
                     );
                   })}
                 </div>
+
+                {/* Quick Claimable Bounty Strip if a mission is ready */}
+                {(player.dailyMissions || []).some((m) => m.progress >= m.target && !m.claimed) && (
+                  <div
+                    style={{
+                      marginTop: '0.55rem',
+                      padding: '0.45rem 0.6rem',
+                      background: 'hsla(38, 68%, 50%, 0.14)',
+                      border: '1px solid var(--border-gold)',
+                      borderRadius: 'var(--radius-sm)',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '0.64rem',
+                        color: 'var(--gold-bright)',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.35rem',
+                      }}
+                    >
+                      <Award size={13} /> Bounty Complete! Claim rewards in My Deck
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-gold"
+                      style={{ minHeight: '28px', padding: '0.2rem 0.55rem', fontSize: '0.66rem' }}
+                      onClick={() => setActiveTab('sanctum')}
+                    >
+                      Claim
+                    </button>
+                  </div>
+                )}
 
                 {/* Expandable Synergies & Faction Drawer */}
                 {squadDrawerOpen && (
@@ -1548,7 +1943,7 @@ export function App() {
                       </div>
                     ) : (
                       <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-                        Upload photos to your Deck to activate elemental & role synergies.
+                        Equip 4 cards in your Deck to activate elemental &amp; role synergies.
                       </p>
                     )}
 
@@ -1615,7 +2010,9 @@ export function App() {
                         letterSpacing: '0.08em',
                       }}
                     >
-                      Zero Demo Content · Pure Player-Forged World
+                      {isSquadReady
+                        ? 'Starter Squad Ready · Battle Wilds & Upload Your Photos'
+                        : 'Account Progression · Build Your Photo Deck'}
                     </div>
                     <h2
                       style={{
@@ -1624,7 +2021,7 @@ export function App() {
                         marginTop: '0.2rem',
                       }}
                     >
-                      Forge Your 4-Card Squad & Populate The Wilds
+                      Battle the Wilds or Forge Your Own Photographs
                     </h2>
                     <p
                       style={{
@@ -1633,7 +2030,8 @@ export function App() {
                         marginTop: '0.35rem',
                       }}
                     >
-                      Every card and opponent in CHROMARIFT comes from real photographs you upload:
+                      Every photograph you upload binds directly to your account, earns Battle XP
+                      to level up automatically, and replaces starter cards in your Squad.
                     </p>
                   </div>
 
@@ -1652,21 +2050,21 @@ export function App() {
                   >
                     <div>
                       <strong style={{ color: 'var(--gold-bright)' }}>
-                        1. Build Your 4-Card Squad ({playerSquad.length}/4):
+                        1. Active Squad ({playerSquad.length}/4 Ready):
                       </strong>{' '}
                       <span style={{ color: 'var(--text-secondary)' }}>
-                        Upload at least 4 photos with <strong>Save to My Deck</strong> to assemble
-                        your combat formation.
+                        Battle Wild Rift opponents right away to build a Win Streak and level up
+                        your cards, or upload photos with <strong>Save to My Deck</strong> to
+                        customize your squad!
                       </span>
                     </div>
                     <div>
                       <strong style={{ color: '#4ade80' }}>
-                        2. Send Unlimited Photos to the Wild ({wildCards.length} active):
+                        2. Explore &amp; Populate The Wilds ({wildCards.length} active):
                       </strong>{' '}
                       <span style={{ color: 'var(--text-secondary)' }}>
-                        Curious what stats a photo will get without saving it to your deck? Upload
-                        photos with <strong>Send to the Wild</strong> to inspect their forged stats
-                        and fight against them later in <strong>The Wilds</strong>!
+                        Upload photos with <strong>Send to the Wild</strong> to turn any shot into
+                        a roaming Wild challenger and post it to the community Stream.
                       </span>
                     </div>
                   </div>
@@ -1682,9 +2080,9 @@ export function App() {
                     <button
                       type="button"
                       className="btn btn-crimson"
-                      onClick={() => openForgeWithMode('wild')}
+                      onClick={handleFightRandomWildPack}
                     >
-                      <Trees size={15} /> Send Photo to Wild
+                      <Swords size={15} /> Battle Wild Pack
                     </button>
                   </div>
                 </div>
@@ -2979,7 +3377,7 @@ export function App() {
            ========================================================= */}
         {activeTab === 'sanctum' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.15rem' }}>
-            {/* Personal Deck Identity & Multi-User Account Switcher Banner */}
+            {/* Personal Deck Identity, Progression Stats & Inline Profile Editor */}
             <div
               style={{
                 background: 'var(--bg-elevated)',
@@ -2987,58 +3385,398 @@ export function App() {
                 borderRadius: 'var(--radius-md)',
                 padding: '0.85rem 0.95rem',
                 display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                flexWrap: 'wrap',
-                gap: '0.6rem',
+                flexDirection: 'column',
+                gap: '0.65rem',
               }}
             >
-              <div>
-                <span
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: '0.62rem',
-                    color: '#4ade80',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.06em',
-                  }}
-                >
-                  ✓ Isolated Personal Photo Deck · Order of {player.faction}
-                </span>
-                <div style={{ fontSize: '0.96rem', fontWeight: 700, marginTop: '0.1rem' }}>
-                  {player.displayName}&apos;s Deck{' '}
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '0.6rem',
+                }}
+              >
+                <div>
                   <span
                     style={{
                       fontFamily: 'var(--font-mono)',
-                      fontSize: '0.72rem',
-                      color: 'var(--gold-bright)',
+                      fontSize: '0.62rem',
+                      color: '#4ade80',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.06em',
                     }}
                   >
-                    (@{player.username} · {playerCards.length} Photo Card
-                    {playerCards.length === 1 ? '' : 's'})
+                    ✓ Bound Account Deck · Lv.{player.level} · Order of {player.faction}
+                  </span>
+                  <div style={{ fontSize: '0.96rem', fontWeight: 700, marginTop: '0.1rem' }}>
+                    {player.displayName}&apos;s Deck{' '}
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '0.72rem',
+                        color: 'var(--gold-bright)',
+                      }}
+                    >
+                      (@{player.username} · {playerCards.length} Card
+                      {playerCards.length === 1 ? '' : 's'})
+                    </span>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="btn btn-surface"
+                    onClick={() => {
+                      if (!editingProfile) {
+                        setEditDisplayName(player.displayName);
+                        setEditUsername(player.username);
+                        setEditFaction(player.faction);
+                      }
+                      setEditingProfile((prev) => !prev);
+                    }}
+                    style={{ minHeight: '34px', padding: '0.3rem 0.6rem', fontSize: '0.7rem' }}
+                    id="edit-profile-toggle-btn"
+                  >
+                    <Edit3 size={12} /> {editingProfile ? 'Close' : 'Edit Profile'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-surface"
+                    onClick={() => setAuthModalOpen(true)}
+                    style={{ minHeight: '34px', padding: '0.3rem 0.6rem', fontSize: '0.7rem' }}
+                  >
+                    <User size={12} /> Account
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-surface"
+                    onClick={handleLogoutNow}
+                    style={{ minHeight: '34px', padding: '0.3rem 0.6rem', fontSize: '0.7rem' }}
+                  >
+                    <LogOut size={12} /> Log Out
+                  </button>
+                </div>
+              </div>
+
+              {/* Account Progression Metrics */}
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(4, 1fr)',
+                  gap: '0.4rem',
+                  background: 'var(--bg-surface)',
+                  padding: '0.5rem',
+                  borderRadius: 'var(--radius-sm)',
+                  textAlign: 'center',
+                  fontFamily: 'var(--font-mono)',
+                }}
+              >
+                <div>
+                  <span className="stat-box-label">LEVEL</span>
+                  <span className="stat-box-val" style={{ color: 'var(--gold-bright)' }}>
+                    Lv.{player.level}
+                  </span>
+                </div>
+                <div>
+                  <span className="stat-box-label">W / L</span>
+                  <span className="stat-box-val">
+                    {player.wins}/{player.losses}
+                  </span>
+                </div>
+                <div>
+                  <span className="stat-box-label">STREAK</span>
+                  <span
+                    className="stat-box-val"
+                    style={{ color: (player.winStreak || 0) > 0 ? '#fb923c' : undefined }}
+                  >
+                    {(player.winStreak || 0) > 0 ? `🔥 ${player.winStreak}` : '0'}
+                  </span>
+                </div>
+                <div>
+                  <span className="stat-box-label">SHARDS</span>
+                  <span className="stat-box-val" style={{ color: '#c084fc' }}>
+                    {player.chromaticShards}
                   </span>
                 </div>
               </div>
 
-              <div style={{ display: 'flex', gap: '0.4rem' }}>
-                <button
-                  type="button"
-                  className="btn btn-surface"
-                  onClick={() => setAuthModalOpen(true)}
-                  style={{ minHeight: '34px', padding: '0.3rem 0.65rem', fontSize: '0.72rem' }}
+              {/* Inline Profile Customizer Form */}
+              {editingProfile && (
+                <form
+                  onSubmit={handleSaveProfile}
+                  style={{
+                    background: 'var(--bg-surface)',
+                    border: '1px solid var(--border-gold)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '0.75rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.55rem',
+                  }}
                 >
-                  <User size={13} /> My Account
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-surface"
-                  onClick={handleLogoutNow}
-                  style={{ minHeight: '34px', padding: '0.3rem 0.65rem', fontSize: '0.72rem' }}
-                >
-                  <LogOut size={13} /> Log Out
-                </button>
-              </div>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1fr 1fr',
+                      gap: '0.45rem',
+                    }}
+                  >
+                    <div>
+                      <label
+                        style={{
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: '0.6rem',
+                          color: 'var(--text-muted)',
+                          textTransform: 'uppercase',
+                          display: 'block',
+                          marginBottom: '0.2rem',
+                        }}
+                      >
+                        Display Name
+                      </label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={editDisplayName}
+                        onChange={(e) => setEditDisplayName(e.target.value)}
+                        required
+                        style={{ padding: '0.45rem 0.6rem', fontSize: '0.82rem' }}
+                      />
+                    </div>
+                    <div>
+                      <label
+                        style={{
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: '0.6rem',
+                          color: 'var(--text-muted)',
+                          textTransform: 'uppercase',
+                          display: 'block',
+                          marginBottom: '0.2rem',
+                        }}
+                      >
+                        @Handle
+                      </label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={editUsername}
+                        onChange={(e) => setEditUsername(e.target.value)}
+                        required
+                        style={{ padding: '0.45rem 0.6rem', fontSize: '0.82rem' }}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '0.6rem',
+                        color: 'var(--text-muted)',
+                        textTransform: 'uppercase',
+                        display: 'block',
+                        marginBottom: '0.25rem',
+                      }}
+                    >
+                      Faction Allegiance
+                    </label>
+                    <div style={{ display: 'flex', gap: '0.35rem' }}>
+                      {(['Helios', 'Umbra', 'Prism'] as FactionId[]).map((fac) => (
+                        <button
+                          key={fac}
+                          type="button"
+                          onClick={() => setEditFaction(fac)}
+                          className={`faction-tag faction-${fac}`}
+                          style={{
+                            flex: 1,
+                            textAlign: 'center',
+                            padding: '0.35rem',
+                            opacity: editFaction === fac ? 1 : 0.45,
+                            fontWeight: editFaction === fac ? 700 : 400,
+                          }}
+                        >
+                          {fac}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '0.4rem' }}>
+                    <button
+                      type="submit"
+                      className="btn btn-gold"
+                      style={{ flex: 1, minHeight: '36px', fontSize: '0.76rem' }}
+                      id="save-profile-btn"
+                    >
+                      <Check size={14} /> Save Profile
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-surface"
+                      style={{ minHeight: '36px', fontSize: '0.76rem' }}
+                      onClick={() => setEditingProfile(false)}
+                    >
+                      <X size={14} /> Cancel
+                    </button>
+                  </div>
+                </form>
+              )}
             </div>
+
+            {/* Repeatable Account Bounties / Missions for Replayability */}
+            {(player.dailyMissions || []).length > 0 && (
+              <div
+                style={{
+                  background: 'var(--bg-elevated)',
+                  border: '1px solid var(--border-gold)',
+                  borderRadius: 'var(--radius-md)',
+                  padding: '0.85rem 0.95rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.6rem',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                  }}
+                >
+                  <div>
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '0.6rem',
+                        color: 'var(--gold-bright)',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.06em',
+                      }}
+                    >
+                      Repeatable Account Progression
+                    </span>
+                    <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.1rem' }}>
+                      Active Account Bounties
+                    </h2>
+                  </div>
+                  {(player.bestWinStreak || 0) > 0 && (
+                    <span
+                      className="card-pill"
+                      style={{ borderColor: '#fb923c', color: '#fb923c' }}
+                    >
+                      Best Streak: {player.bestWinStreak}
+                    </span>
+                  )}
+                </div>
+
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
+                    gap: '0.5rem',
+                  }}
+                >
+                  {(player.dailyMissions || []).map((mission) => {
+                    const pct = Math.min(
+                      100,
+                      Math.round(((mission.progress || 0) / Math.max(1, mission.target)) * 100)
+                    );
+                    const readyToClaim = mission.progress >= mission.target && !mission.claimed;
+
+                    return (
+                      <div
+                        key={mission.id}
+                        style={{
+                          background: 'var(--bg-surface)',
+                          border: `1px solid ${
+                            readyToClaim ? 'var(--gold-bright)' : 'var(--border-subtle)'
+                          }`,
+                          borderRadius: 'var(--radius-sm)',
+                          padding: '0.6rem 0.7rem',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '0.35rem',
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            gap: '0.35rem',
+                          }}
+                        >
+                          <strong style={{ fontSize: '0.78rem' }}>{mission.title}</strong>
+                          <span
+                            style={{
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: '0.58rem',
+                              color: 'var(--gold-bright)',
+                            }}
+                          >
+                            Tier {mission.tier || 1}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)' }}>
+                          {mission.description}
+                        </div>
+                        <div
+                          style={{
+                            height: '5px',
+                            borderRadius: '999px',
+                            background: 'rgba(255,255,255,0.08)',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          <div
+                            style={{
+                              height: '100%',
+                              width: `${pct}%`,
+                              background: readyToClaim ? '#4ade80' : 'var(--gold-bright)',
+                              transition: 'width 0.25s ease',
+                            }}
+                          />
+                        </div>
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            gap: '0.4rem',
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: '0.6rem',
+                          }}
+                        >
+                          <span style={{ color: 'var(--text-muted)' }}>
+                            {Math.min(mission.progress, mission.target)}/{mission.target} · +
+                            {mission.rewardDust} Dust · +{mission.rewardShards} Shards
+                          </span>
+                          {readyToClaim && (
+                            <button
+                              type="button"
+                              className="btn btn-gold"
+                              style={{
+                                minHeight: '26px',
+                                padding: '0.18rem 0.5rem',
+                                fontSize: '0.64rem',
+                              }}
+                              onClick={() => handleClaimMission(mission)}
+                              id={`claim-mission-${mission.id}`}
+                            >
+                              Claim
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Active 4-Card Formation Builder (2x2 Mobile Tactical Grid) */}
             <div
@@ -3054,6 +3792,7 @@ export function App() {
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
+                  flexWrap: 'wrap',
                   gap: '0.5rem',
                   marginBottom: '0.6rem',
                 }}
@@ -3069,13 +3808,33 @@ export function App() {
                   >
                     {isSquadReady
                       ? '✓ 4/4 Combat Formation Ready'
-                      : `Requires 4 Uploaded Deck Photos (${playerSquad.length}/4)`}
+                      : `Requires 4 Deck Photos (${playerSquad.length}/4)`}
                   </span>
                   <h1 style={{ fontFamily: 'var(--font-display)', fontSize: '1.25rem' }}>
                     @{player.username}&apos;s Battle Squad
                   </h1>
                 </div>
-                <span className="card-power-badge">⚔ {totalSquadPower}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  {playerCards.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn btn-surface"
+                      style={{
+                        minHeight: '32px',
+                        padding: '0.25rem 0.6rem',
+                        fontSize: '0.68rem',
+                        borderColor: 'var(--border-gold)',
+                        color: 'var(--gold-bright)',
+                      }}
+                      onClick={handleAutoBuildSquad}
+                      id="auto-build-squad-btn"
+                      title="Automatically pick your strongest balanced 4-card Squad"
+                    >
+                      <Wand2 size={12} /> Auto-Build Best
+                    </button>
+                  )}
+                  <span className="card-power-badge">⚔ {totalSquadPower}</span>
+                </div>
               </div>
 
               {/* Horizontally Scrollable Synergy Pills */}
@@ -3106,6 +3865,16 @@ export function App() {
                         slotBadge={`S${idx + 1} ${
                           idx === 0 ? 'FRONT' : idx === 3 ? 'BACK' : 'MID'
                         }`}
+                        footerActions={
+                          <button
+                            type="button"
+                            className="btn btn-surface"
+                            style={{ width: '100%', minHeight: '30px', fontSize: '0.66rem', padding: '0.2rem 0.45rem' }}
+                            onClick={() => handleRemoveFromSlot(card.id)}
+                          >
+                            Unequip Slot {idx + 1}
+                          </button>
+                        }
                       />
                     );
                   }
@@ -3145,7 +3914,7 @@ export function App() {
                           color: 'var(--text-secondary)',
                         }}
                       >
-                        Tap to Upload Photo to Deck
+                        Tap to Upload Photo or Equip from Vault
                       </span>
                     </button>
                   );
@@ -3240,6 +4009,9 @@ export function App() {
                   {filteredVaultCards.map((card) => {
                     const inSquadIdx = player.squadCardIds.indexOf(card.id);
                     const levelCost = card.level * 100;
+                    const cardXpNeed = card.level * 100;
+                    const cardXpCur = card.xp || 0;
+                    const cardXpPct = Math.min(100, Math.round((cardXpCur / cardXpNeed) * 100));
 
                     return (
                       <CombatCardView
@@ -3247,7 +4019,11 @@ export function App() {
                         card={card}
                         onJudgeVibe={handleJudgePhotoVibe}
                         slotBadge={
-                          inSquadIdx !== -1 ? `EQUIPPED S${inSquadIdx + 1}` : undefined
+                          inSquadIdx !== -1
+                            ? `EQUIPPED S${inSquadIdx + 1}`
+                            : card.isStarter
+                            ? 'STARTER'
+                            : undefined
                         }
                         footerActions={
                           <div
@@ -3257,6 +4033,53 @@ export function App() {
                               gap: '0.45rem',
                             }}
                           >
+                            {/* Card Battle XP & Level Progress */}
+                            <div
+                              style={{
+                                background: 'rgba(255,255,255,0.03)',
+                                border: '1px solid var(--border-subtle)',
+                                borderRadius: '6px',
+                                padding: '0.38rem 0.5rem',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '0.22rem',
+                              }}
+                            >
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  fontFamily: 'var(--font-mono)',
+                                  fontSize: '0.58rem',
+                                  color: 'var(--text-secondary)',
+                                }}
+                              >
+                                <span style={{ color: 'var(--gold-bright)', fontWeight: 700 }}>
+                                  Lv.{card.level} · Battle XP {cardXpCur}/{cardXpNeed}
+                                </span>
+                                <span>
+                                  {card.battlesWon || 0}W / {card.battlesFought || 0}B
+                                </span>
+                              </div>
+                              <div
+                                style={{
+                                  height: '4px',
+                                  borderRadius: '999px',
+                                  background: 'rgba(255,255,255,0.08)',
+                                  overflow: 'hidden',
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    height: '100%',
+                                    width: `${cardXpPct}%`,
+                                    background: 'var(--gold-bright)',
+                                    transition: 'width 0.25s ease',
+                                  }}
+                                />
+                              </div>
+                            </div>
+
                             {/* Equip Slot Selector */}
                             <div
                               style={{
@@ -3493,7 +4316,7 @@ export function App() {
                   }}
                   onClick={() => setWildFilter(pill)}
                 >
-                  {pill}
+                  {pill in ELEMENT_DISPLAY ? ELEMENT_DISPLAY[pill as ElementType].label : pill}
                 </button>
               ))}
             </div>
@@ -4235,12 +5058,16 @@ export function App() {
         cards={mmoState.cards}
         onLoginSuccess={({
           sessionUser: nextUser,
+          sessionToken: nextToken,
           activePlayerId: nextPid,
           state: nextState,
           accounts: nextAccounts,
           message,
         }) => {
           setSessionUser(nextUser);
+          if (nextToken !== undefined) {
+            setSavedSessionToken(nextToken || null);
+          }
           if (nextPid !== undefined) {
             setActivePlayerId(nextPid);
             setSavedActivePlayerId(nextPid);
@@ -4249,12 +5076,23 @@ export function App() {
             setAccounts(nextAccounts);
           }
           if (nextState) {
+            const typedNext = nextState as MmoState;
+            const resolvedPid = nextPid !== undefined ? nextPid : activePlayerId;
             syncState({
-              ...(nextState as MmoState),
+              ...typedNext,
               sessionUser: nextUser,
-              activePlayerId: nextPid !== undefined ? nextPid : activePlayerId,
+              sessionToken: nextToken ?? null,
+              activePlayerId: resolvedPid,
               accounts: nextAccounts || accounts,
             });
+            if (nextUser && resolvedPid) {
+              void syncAfterLogin(
+                typedNext,
+                resolvedPid,
+                nextUser.username,
+                nextToken ?? null
+              );
+            }
           }
           showToast(message);
         }}
